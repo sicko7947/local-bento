@@ -1,0 +1,12 @@
+[package]
+name = "core"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+sqlx = { workspace = true, features = ["time"] }
+serde = { workspace = true }
+anyhow = { workspace = true }
+uuid = { workspace = true }
+time = { version = "0.3", features = ["serde"] }
+serde_yaml = "0.9"

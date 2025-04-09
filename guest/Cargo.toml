@@ -1,0 +1,11 @@
+[package]
+name = "guest"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+risc0-zkvm = { version = "0.20", default-features = false }
+
+[[bin]]
+name = "guest"
+path = "main.rs"
