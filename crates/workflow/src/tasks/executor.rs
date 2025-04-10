@@ -323,9 +323,10 @@ pub async fn executor(agent: &Agent, job_id: &Uuid, request: &ExecutorReq) -> Re
             .read_buf_from_s3(&receipt_key)
             .await
             .context("Failed to download receipt from obj store")?;
-        let receipt: Receipt =
-            bincode::deserialize(&receipt_bytes).context("Failed to decode assumption Receipt")?;
-
+        let (receipt, _): (Receipt, usize) =
+            bincode::serde::decode_from_slice(&receipt_bytes, bincode::config::standard())
+                .context("Failed to decode assumption Receipt")?;
+        
         assumption_receipts.push(receipt.clone());
 
         let assumption_claim = receipt.inner.claim()?.digest().to_string();
