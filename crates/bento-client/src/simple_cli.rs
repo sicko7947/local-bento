@@ -55,7 +55,7 @@ async fn main() -> Result<()> {
         .context("Failed to read input file from disk")?;
 
     // Submit and track job
-    let (session_uuid, _) = stark_workflow(&client, image, input, vec![], &args.output_dir).await?;
+    let session_uuid = stark_workflow(&client, image, input, vec![], &args.output_dir).await?;
 
     // Generate SNARK if requested
     if args.snarkify {
@@ -71,7 +71,7 @@ async fn stark_workflow(
     input: Vec<u8>,
     assumptions: Vec<String>,
     output_dir: &PathBuf,
-) -> Result<(String, String)> {
+) -> Result<String> {  // Changed return type from Result<(String, String)>
     // Generate and upload image
     let image_id = compute_image_id(&image).unwrap().to_string();
     client.upload_img(&image_id, image).await
@@ -103,7 +103,6 @@ async fn stark_workflow(
     tracing::info!("Session info saved to: {}", session_info_path.display());
 
     // Poll for completion
-    let mut receipt_id = String::new();
     loop {
         let res = session.status(client).await
             .context("Failed to get STARK status")?;
@@ -128,7 +127,8 @@ async fn stark_workflow(
                     .context("Failed to write STARK receipt to file")?;
                 tracing::info!("STARK receipt saved to: {}", receipt_path.display());
 
-                receipt_id = client.upload_receipt(receipt).await
+                // Upload receipt but don't store the ID since it's not used
+                client.upload_receipt(receipt).await
                     .context("Failed to upload receipt")?;
                 break;
             }
@@ -141,7 +141,7 @@ async fn stark_workflow(
             }
         }
     }
-    Ok((session.uuid, receipt_id))
+    Ok(session.uuid)  // Only return the session uuid
 }
 
 async fn stark_2_snark(session_id: String, client: ProvingClient, output_dir: &PathBuf) -> Result<()> {
