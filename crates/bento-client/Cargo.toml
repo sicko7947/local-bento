@@ -1,0 +1,38 @@
+[package]
+name = "bento-client"
+resolver = "2"
+version = { workspace = true }
+edition = { workspace = true }
+homepage = { workspace = true }
+repository = { workspace = true }
+publish = false
+
+[package.metadata.release]
+release = false
+
+[dependencies]
+anyhow = { workspace = true }
+bonsai-sdk = { workspace = true }
+bytemuck = { workspace = true }
+clap = { workspace = true, features = ["env", "derive"] }
+risc0-zkvm = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true } 
+chrono = "0.4"
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+hex = "0.4"
+bincode = "1.3"
+
+sample-guest-common = { workspace = true, optional = true }
+sample-guest-methods = { workspace = true, optional = true }
+
+[[bin]]
+name = "bento_cli"
+path = "src/bento_cli.rs"
+required-features = ["sample-guest-common", "sample-guest-methods"]
+
+[[bin]]
+name = "simple_cli"
+path = "src/simple_cli.rs"
