@@ -8,7 +8,7 @@ echo "Waiting for services to start..."
 sleep 3
 
 # Define configuration parameters
-DB_URL="postgres://postgres:postgres@localhost:5432/taskdb"
+DATABASE_URL="postgres://postgres:postgres@localhost:5432/taskdb"
 REDIS_URL="redis://localhost:6379"
 S3_BUCKET="proofs"
 S3_ACCESS_KEY="minioadmin"
@@ -17,8 +17,8 @@ S3_URL="http://localhost:9000"
 
 # Start the REST API with all required parameters
 echo "Starting REST API..."
-RUST_LOG=info ./rest_api -- \
-    "$DB_URL" \
+RUST_LOG=info ./target/release/rest_api -- \
+    "$DATABASE_URL" \
     "$S3_BUCKET" \
     "$S3_ACCESS_KEY" \
     "$S3_SECRET_KEY" \
@@ -32,7 +32,7 @@ sleep 2
 echo "Starting Executor agent..."
 RUST_LOG=info ./target/release/agent \
     --task-stream executor \
-    "$DB_URL" \
+    "$DATABASE_URL" \
     "$REDIS_URL" \
     "$S3_BUCKET" \
     "$S3_ACCESS_KEY" \
@@ -45,7 +45,7 @@ echo "Starting GPU agent..."
 RUST_LOG=info ./target/release/agent \
     --task-stream gpu \
     --segment-po2 1000000 \
-    "$DB_URL" \
+    "$DATABASE_URL" \
     "$REDIS_URL" \
     "$S3_BUCKET" \
     "$S3_ACCESS_KEY" \
@@ -57,7 +57,7 @@ GPU_PID=$!
 echo "Starting Aux agent..."
 RUST_LOG=info ./target/release/agent \
     --task-stream aux \
-    "$DB_URL" \
+    "$DATABASE_URL" \
     "$REDIS_URL" \
     "$S3_BUCKET" \
     "$S3_ACCESS_KEY" \
@@ -66,7 +66,7 @@ RUST_LOG=info ./target/release/agent \
 AUX_PID=$!
 
 echo "Bento is running with:"
-echo "- REST API: http://localhost:8081"
+echo "- REST API: http://localhost:8080"
 echo "- MinIO Console: http://localhost:9001 (login: minioadmin/minioadmin)"
 echo "- PostgreSQL: localhost:5432 (login: bento/bentopassword)"
 echo "Press Ctrl+C to stop."
