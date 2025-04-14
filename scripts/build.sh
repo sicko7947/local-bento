@@ -2,16 +2,11 @@
 
 
 echo "Starting infrastructure..."
-docker-compose up -d
+docker-compose up -d --force-recreate
 
 # Wait for services to be ready
 echo "Waiting for services to start..."
 sleep 3
-
-echo "Initializing database schema..."
-docker exec -i local_bento_postgres_1 bash -c "PGPASSWORD=postgres psql -U postgres -d taskdb -f -" < crates/taskdb/migrations/1_taskdb.sql
-docker exec -i local_bento_postgres_1 bash -c "PGPASSWORD=postgres psql -U postgres -d taskdb -f -" < crates/taskdb/migrations/2_optimizations.sql
-echo "Database schema initialized."
 
 # Define configuration parameters
 export DATABASE_URL="postgres://postgres:postgres@localhost:5432/taskdb"
@@ -23,7 +18,7 @@ cargo build --bin rest_api --release
 cargo build --bin agent --release 
 
 # Build the CLI
-cargo build --bin simple_cli --release 
+cargo build --bin bento_cli --release --features="sample-guest-common sample-guest-methods"
 
 echo "- REST API: http://localhost:8080"
 echo "- MinIO Console: http://localhost:9001 (login: minioadmin/minioadmin)"

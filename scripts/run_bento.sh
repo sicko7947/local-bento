@@ -1,7 +1,7 @@
 #!/bin/bash
 
 echo "Starting infrastructure..."
-docker-compose up -d
+docker compose down --volumes --remove-orphans && docker compose build --no-cache && docker compose up --build -d
 
 # Wait for services to be ready
 echo "Waiting for services to start..."
@@ -30,8 +30,8 @@ sleep 2
 
 # Start the Executor agent
 echo "Starting Executor agent..."
-RUST_LOG=info ./target/release/agent \
-    --task-stream executor \
+RUST_LOG=debug ./target/release/agent \
+    --task-stream exec \
     "$DATABASE_URL" \
     "$REDIS_URL" \
     "$S3_BUCKET" \
@@ -42,9 +42,9 @@ EXEC_PID=$!
 
 # Start the GPU agent
 echo "Starting GPU agent..."
-RUST_LOG=info ./target/release/agent \
+RUST_LOG=debug ./target/release/agent \
     --task-stream gpu \
-    --segment-po2 1000000 \
+    --segment-po2 19 \
     "$DATABASE_URL" \
     "$REDIS_URL" \
     "$S3_BUCKET" \
@@ -55,7 +55,7 @@ GPU_PID=$!
 
 # Start the Aux agent
 echo "Starting Aux agent..."
-RUST_LOG=info ./target/release/agent \
+RUST_LOG=debug ./target/release/agent \
     --task-stream aux \
     "$DATABASE_URL" \
     "$REDIS_URL" \
@@ -68,7 +68,7 @@ AUX_PID=$!
 echo "Bento is running with:"
 echo "- REST API: http://localhost:8080"
 echo "- MinIO Console: http://localhost:9001 (login: minioadmin/minioadmin)"
-echo "- PostgreSQL: localhost:5432 (login: bento/bentopassword)"
+echo "- PostgreSQL: localhost:5432 (login: postgres/postgres)"
 echo "Press Ctrl+C to stop."
 
 # Setup trap to clean up processes on exit
