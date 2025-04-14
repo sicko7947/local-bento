@@ -13,13 +13,14 @@ use std::path::PathBuf;
 pub struct Args {
     /// Risc0 ZKVM elf file on disk
     #[clap(short = 'f', long)]
-    elf_file: PathBuf,
+    elf_file: Option<PathBuf>,
 
     /// ZKVM encoded input to be supplied to ExecEnv .write() method
     ///
     /// Should be `risc0_zkvm::serde::to_vec` encoded binary data
-    #[clap(short, long)]
-    input_file: PathBuf,
+    #[clap(short, long, conflicts_with = "iter_count")]
+    input_file: Option<PathBuf>,
+
 
     /// Optionally Create a SNARK proof
     #[clap(short, long, default_value_t = false, conflicts_with = "exec_only")]
@@ -47,12 +48,19 @@ async fn main() -> Result<()> {
     let client =
         ProvingClient::from_parts(args.endpoint, String::new(), risc0_zkvm::VERSION).unwrap();
 
-    let image = std::fs::read(&args.elf_file).context("Failed to read elf file from disk")?;
-    let input = std::fs::read(&args.input_file).context("Failed to read input file from disk")?;
+    let (image, input) = if let Some(elf_file) = args.elf_file {
+        let image = std::fs::read(elf_file).context("Failed to read elf file from disk")?;
+        let input = std::fs::read(
+            args.input_file.expect("if --elf-file is supplied, supply a --input-file"),
+        )?;
+        (image, input)
+    } else {
+        bail!("Invalid arg config, either elf_file or iter_count should be supplied");
+    };
 
     // first round -- only iter
     let (_session_uuid, receipt_id) =
-        stark_workflow(&client, image.clone(), input, vec![], args.exec_only).await?;
+        stark_workflow(&client, image.clone(), input.clone(), vec![], args.exec_only).await?;
 
     // return if exec only and success
     if args.exec_only {
@@ -60,8 +68,8 @@ async fn main() -> Result<()> {
     }
 
     // second round -- composition and keccak
-    let input = to_vec(&()).expect("Failed to serialize input"); // Replace with actual input structure if needed
-    let input: Vec<u8> = bytemuck::cast_slice(&input).to_vec();
+    let input: Vec<u8> =
+        bytemuck::cast_slice(&to_vec(&input).expect("Failed to r0 to_vec")).to_vec();
     let (session_uuid, _receipt_id) =
         stark_workflow(&client, image, input, vec![receipt_id], args.exec_only)
             .await
@@ -90,10 +98,13 @@ async fn stark_workflow(
     std::fs::write("/tmp/input.bin", &input)?;
     let input_id = client.upload_input(input).await.context("Failed to upload_input")?;
 
+    tracing::info!("image_id: {image_id} | input_id: {input_id}");
+
     let session = client
         .create_session(image_id.clone(), input_id, assumptions, exec_only)
         .await
-        .context("Failed to create proving session")?;
+        .context("Failed to stark STARK proving")?;
+    tracing::info!("STARK job_id: {}", session.uuid);
 
     let mut receipt_id = String::new();
 
