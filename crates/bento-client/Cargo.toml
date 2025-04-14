@@ -25,14 +25,6 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 hex = "0.4"
 bincode = { version = "2.0.1", features = ["serde"] }
 
-sample-guest-common = { workspace = true, optional = true }
-sample-guest-methods = { workspace = true, optional = true }
-
 [[bin]]
 name = "bento_cli"
 path = "src/bento_cli.rs"
-required-features = ["sample-guest-common", "sample-guest-methods"]
-
-[[bin]]
-name = "simple_cli"
-path = "src/simple_cli.rs"

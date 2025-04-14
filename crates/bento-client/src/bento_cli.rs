@@ -6,8 +6,6 @@ use anyhow::{bail, Context, Result};
 use bonsai_sdk::non_blocking::Client as ProvingClient;
 use clap::Parser;
 use risc0_zkvm::{compute_image_id, serde::to_vec};
-use sample_guest_common::IterReq::{CompositionKeccakUnion, Iter};
-use sample_guest_methods::METHOD_NAME_ID;
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
@@ -15,21 +13,13 @@ use std::path::PathBuf;
 pub struct Args {
     /// Risc0 ZKVM elf file on disk
     #[clap(short = 'f', long)]
-    elf_file: Option<PathBuf>,
+    elf_file: PathBuf,
 
     /// ZKVM encoded input to be supplied to ExecEnv .write() method
     ///
     /// Should be `risc0_zkvm::serde::to_vec` encoded binary data
-    #[clap(short, long, conflicts_with = "iter_count")]
-    input_file: Option<PathBuf>,
-
-    /// Optional test vector to run the sample guest with the supplied iteration count
-    ///
-    /// Allows for rapid testing of arbitrary large cycle count guests
-    ///
-    /// NOTE: TODO remove this flag and simplify client
-    #[clap(short = 'c', long, conflicts_with = "input_file")]
-    iter_count: Option<u64>,
+    #[clap(short, long)]
+    input_file: PathBuf,
 
     /// Optionally Create a SNARK proof
     #[clap(short, long, default_value_t = false, conflicts_with = "exec_only")]
@@ -42,7 +32,7 @@ pub struct Args {
     exec_only: bool,
 
     /// Bento HTTP API Endpoint
-    #[clap(short = 't', long, default_value = "http://localhost:8081")]
+    #[clap(short = 't', long, default_value = "http://localhost:8080")]
     endpoint: String,
 }
 
@@ -57,19 +47,8 @@ async fn main() -> Result<()> {
     let client =
         ProvingClient::from_parts(args.endpoint, String::new(), risc0_zkvm::VERSION).unwrap();
 
-    let (image, input) = if let Some(elf_file) = args.elf_file {
-        let image = std::fs::read(elf_file).context("Failed to read elf file from disk")?;
-        let input = std::fs::read(
-            args.input_file.expect("if --elf-file is supplied, supply a --input-file"),
-        )?;
-        (image, input)
-    } else if let Some(iter_count) = args.iter_count {
-        let input = to_vec(&Iter(iter_count)).expect("Failed to r0 to_vec");
-        let input = bytemuck::cast_slice(&input).to_vec();
-        (sample_guest_methods::METHOD_NAME_ELF.to_vec(), input)
-    } else {
-        bail!("Invalid arg config, either elf_file or iter_count should be supplied");
-    };
+    let image = std::fs::read(&args.elf_file).context("Failed to read elf file from disk")?;
+    let input = std::fs::read(&args.input_file).context("Failed to read input file from disk")?;
 
     // first round -- only iter
     let (_session_uuid, receipt_id) =
@@ -81,9 +60,8 @@ async fn main() -> Result<()> {
     }
 
     // second round -- composition and keccak
-    let input = CompositionKeccakUnion(args.iter_count.unwrap(), METHOD_NAME_ID.into(), 5);
-    let input: Vec<u8> =
-        bytemuck::cast_slice(&to_vec(&input).expect("Failed to r0 to_vec")).to_vec();
+    let input = to_vec(&()).expect("Failed to serialize input"); // Replace with actual input structure if needed
+    let input: Vec<u8> = bytemuck::cast_slice(&input).to_vec();
     let (session_uuid, _receipt_id) =
         stark_workflow(&client, image, input, vec![receipt_id], args.exec_only)
             .await
@@ -114,11 +92,12 @@ async fn stark_workflow(
 
     tracing::info!("image_id: {image_id} | input_id: {input_id}");
 
+    tracing::debug!("Starting second round of proving with input: {:?}", input);
     let session = client
         .create_session(image_id.clone(), input_id, assumptions, exec_only)
         .await
-        .context("Failed to stark STARK proving")?;
-    tracing::info!("STARK job_id: {}", session.uuid);
+        .context("Failed to create proving session")?;
+    tracing::debug!("Proving session created: {:?}", session);
 
     let mut receipt_id = String::new();
 

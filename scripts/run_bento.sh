@@ -43,8 +43,8 @@ EXEC_PID=$!
 # Start the GPU agent
 echo "Starting GPU agent..."
 RUST_LOG=debug ./target/release/agent \
-    --task-stream gpu \
-    # --segment-po2 19 \
+    --task-stream prove \
+    --segment-po2 10 \
     "$DATABASE_URL" \
     "$REDIS_URL" \
     "$S3_BUCKET" \
