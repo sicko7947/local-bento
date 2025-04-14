@@ -90,14 +90,10 @@ async fn stark_workflow(
     std::fs::write("/tmp/input.bin", &input)?;
     let input_id = client.upload_input(input).await.context("Failed to upload_input")?;
 
-    tracing::info!("image_id: {image_id} | input_id: {input_id}");
-
-    tracing::debug!("Starting second round of proving with input: {:?}", input);
     let session = client
         .create_session(image_id.clone(), input_id, assumptions, exec_only)
         .await
         .context("Failed to create proving session")?;
-    tracing::debug!("Proving session created: {:?}", session);
 
     let mut receipt_id = String::new();
 
