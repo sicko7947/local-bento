@@ -6,10 +6,6 @@ use anyhow::{Context, Result};
 use hex::FromHex;
 use risc0_zkvm::sha::Digest;
 use serde::{Deserialize, Serialize};
-use bincode::{
-    config::{standard},
-    serde::{decode_from_slice, encode_to_vec},
-};
 
 pub(crate) mod executor;
 pub(crate) mod finalize;
@@ -39,11 +35,11 @@ pub(crate) fn read_image_id(image_id: &str) -> Result<Digest> {
 
 /// Serializes an object into a Vec<u8> using bincode.
 pub(crate) fn serialize_obj<T: Serialize>(item: &T) -> Result<Vec<u8>> {
-    encode_to_vec(item, standard()).map_err(anyhow::Error::new)
+    bincode::serialize(item).map_err(anyhow::Error::new)
 }
 
-/// Deserializes an encoded function
+/// Deserializes a an encoded function
 pub(crate) fn deserialize_obj<T: for<'de> Deserialize<'de>>(encoded: &[u8]) -> Result<T> {
-    let (decoded, _): (T, usize) = decode_from_slice(encoded, standard())?;
+    let decoded = bincode::deserialize(encoded)?;
     Ok(decoded)
 }

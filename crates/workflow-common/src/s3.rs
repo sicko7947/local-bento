@@ -10,10 +10,6 @@ use aws_sdk_s3::{
     types::CreateBucketConfiguration,
     Client,
 };
-use bincode::{
-    config::{standard},
-    serde::{decode_from_slice, encode_to_vec},
-};
 use std::path::Path;
 
 /// Object store elf dir
@@ -89,10 +85,9 @@ impl S3Client {
         T: serde::de::DeserializeOwned,
     {
         let result = self.client.get_object().bucket(&self.bucket).key(key).send().await?;
+
         let encoded = result.body.collect().await?.to_vec();
-        let (decoded, _): (T, usize) = decode_from_slice(&encoded, standard())
-            .context("Failed to deserialize s3 object")?;
-        Ok(decoded)
+        bincode::deserialize(&encoded).context("Failed to deserialize s3 object")
     }
 
     /// Reads a s3 object to byte buffer
@@ -107,7 +102,7 @@ impl S3Client {
     where
         T: serde::Serialize,
     {
-        let bytes = encode_to_vec(&obj, standard())?;
+        let bytes = bincode::serialize(&obj)?;
         let data_stream = ByteStream::from(bytes);
         self.client.put_object().bucket(&self.bucket).key(key).body(data_stream).send().await?;
         Ok(())

@@ -17,7 +17,7 @@ S3_URL="http://localhost:9000"
 
 # Start the REST API with all required parameters
 echo "Starting REST API..."
-RUST_LOG=info ./target/release/rest_api -- \
+RUST_LOG=info ./release/linux_amd64/rest_api -- \
     "$DATABASE_URL" \
     "$S3_BUCKET" \
     "$S3_ACCESS_KEY" \
@@ -30,7 +30,7 @@ sleep 2
 
 # Start the Executor agent
 echo "Starting Executor agent..."
-RUST_LOG=debug ./target/release/agent \
+RUST_LOG=debug ./release/linux_amd64/agent \
     --task-stream exec \
     "$DATABASE_URL" \
     "$REDIS_URL" \
@@ -42,9 +42,9 @@ EXEC_PID=$!
 
 # Start the GPU agent
 echo "Starting GPU agent..."
-RUST_LOG=debug ./target/release/agent \
+RUST_LOG=debug ./release/linux_amd64/agent \
     --task-stream prove \
-    --segment-po2 15 \
+    --segment-po2 19 \
     "$DATABASE_URL" \
     "$REDIS_URL" \
     "$S3_BUCKET" \
@@ -55,7 +55,7 @@ GPU_PID=$!
 
 # Start the Aux agent
 echo "Starting Aux agent..."
-RUST_LOG=debug ./target/release/agent \
+RUST_LOG=debug ./release/linux_amd64/agent \
     --task-stream aux \
     "$DATABASE_URL" \
     "$REDIS_URL" \

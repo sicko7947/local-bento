@@ -17,13 +17,9 @@ bytemuck = { workspace = true }
 clap = { workspace = true, features = ["env", "derive"] }
 risc0-zkvm = { workspace = true }
 serde = { workspace = true }
-serde_json = { workspace = true } 
-chrono = "0.4"
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
-hex = "0.4"
-bincode = { version = "2.0.1", features = ["serde"] }
 
 [[bin]]
 name = "bento_cli"

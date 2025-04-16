@@ -19,11 +19,11 @@ export DATABASE_URL="postgres://postgres:postgres@localhost:5432/taskdb"
 # Build the REST API
 cargo build --bin rest_api --release
 
-# Build the agent
-cargo build --bin agent --release 
-
 # Build the CLI
 cargo build --bin bento_cli --release
+
+# Build the agent
+cargo build --bin agent -F cuda --release
 
 echo "- REST API: http://localhost:8080"
 echo "- MinIO Console: http://localhost:9001 (login: minioadmin/minioadmin)"
