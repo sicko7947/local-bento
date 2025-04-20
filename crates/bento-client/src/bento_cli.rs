@@ -68,8 +68,6 @@ async fn main() -> Result<()> {
     }
 
     // second round -- composition and keccak
-    let input: Vec<u8> =
-        bytemuck::cast_slice(&to_vec(&input).expect("Failed to r0 to_vec")).to_vec();
     let (session_uuid, _receipt_id) =
         stark_workflow(&client, image, input, vec![receipt_id], args.exec_only)
             .await
