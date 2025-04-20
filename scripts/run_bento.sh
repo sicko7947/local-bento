@@ -17,7 +17,7 @@ S3_URL="http://localhost:9000"
 
 # Start the REST API with all required parameters
 echo "Starting REST API..."
-RUST_LOG=info ./release/linux_amd64/rest_api -- \
+RUST_LOG=info ./release/linux_amd64/rest_api_amd64 -- \
     "$DATABASE_URL" \
     "$S3_BUCKET" \
     "$S3_ACCESS_KEY" \
@@ -30,7 +30,7 @@ sleep 2
 
 # Start the Executor agent
 echo "Starting Executor agent..."
-RUST_LOG=info ./release/linux_amd64/agent \
+RUST_LOG=info ./release/linux_amd64/agent_amd64 \
     --task-stream exec \
     "$DATABASE_URL" \
     "$REDIS_URL" \
@@ -42,7 +42,7 @@ EXEC_PID=$!
 
 # Start the GPU agent
 echo "Starting GPU agent..."
-RUST_LOG=info ./release/linux_amd64/agent \
+RUST_LOG=info ./release/linux_amd64/agent_amd64 \
     --task-stream prove \
     --segment-po2 19 \
     "$DATABASE_URL" \
@@ -55,7 +55,7 @@ GPU_PID=$!
 
 # Start the Aux agent
 echo "Starting Aux agent..."
-RUST_LOG=info ./release/linux_amd64/agent \
+RUST_LOG=info ./release/linux_amd64/agent_amd64 \
     --task-stream aux \
     "$DATABASE_URL" \
     "$REDIS_URL" \
@@ -67,7 +67,7 @@ AUX_PID=$!
 
 # Start the Coproc agent
 echo "Starting Coproc agent..."
-RUST_LOG=info ./release/linux_amd64/agent \
+RUST_LOG=info ./release/linux_amd64/agent_amd64 \
     --task-stream coproc \
     "$DATABASE_URL" \
     "$REDIS_URL" \
@@ -79,7 +79,7 @@ AUX_PID=$!
 
 # Start the Join agent
 echo "Starting Join agent..."
-RUST_LOG=info ./release/linux_amd64/agent \
+RUST_LOG=info ./release/linux_amd64/agent_amd64 \
     --task-stream join \
     "$DATABASE_URL" \
     "$REDIS_URL" \
@@ -91,7 +91,7 @@ AUX_PID=$!
 
 # Start the Snark agent
 echo "Starting Snark agent..."
-RUST_LOG=info ./release/linux_amd64/agent \
+RUST_LOG=info ./release/linux_amd64/agent_amd64 \
     --task-stream snark \
     "$DATABASE_URL" \
     "$REDIS_URL" \

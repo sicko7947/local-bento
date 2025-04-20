@@ -1,1 +1,4 @@
 target/*
+release/linux_amd64/agent_amd64
+release/linux_amd64/bento_cli_amd64
+release/linux_amd64/rest_api_amd64
