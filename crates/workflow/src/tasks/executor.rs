@@ -278,7 +278,7 @@ enum SenderType {
 /// Writes out all segments async using tokio tasks then waits for all
 /// tasks to complete before exiting.
 pub async fn executor(agent: &Agent, job_id: &Uuid, request: &ExecutorReq) -> Result<ExecutorResp> {
-    let mut conn = redis::get_connection(&agent.redis_pool).await?;
+    let mut conn = agent.redis_pool.get().await?;
     let job_prefix = format!("job:{job_id}");
 
     // Fetch ELF binary data
@@ -371,7 +371,7 @@ pub async fn executor(agent: &Agent, job_id: &Uuid, request: &ExecutorReq) -> Re
     let (task_tx, mut task_rx) = tokio::sync::mpsc::channel::<SenderType>(TASK_QUEUE_SIZE);
     let task_tx_clone = task_tx.clone();
 
-    let mut writer_conn = redis::get_connection(&agent.redis_pool).await?;
+    let mut writer_conn = agent.redis_pool.get().await?;
     let segments_prefix_clone = segments_prefix.clone();
     let redis_ttl = agent.args.redis_ttl;
 
@@ -454,7 +454,7 @@ pub async fn executor(agent: &Agent, job_id: &Uuid, request: &ExecutorReq) -> Re
 
     // Write keccak data to redis + schedule proving
     let coproc = Coprocessor::new(task_tx_clone.clone());
-    let mut coproc_redis = redis::get_connection(&agent.redis_pool).await?;
+    let mut coproc_redis = agent.redis_pool.get().await?;
     let coproc_prefix = format!("{job_prefix}:{COPROC_CB_PATH}");
     let mut guest_fault = false;
 
@@ -468,7 +468,9 @@ pub async fn executor(agent: &Agent, job_id: &Uuid, request: &ExecutorReq) -> Re
 
             match task_type {
                 SenderType::Segment(segment_index) => {
-                    planner.enqueue_segment().expect("Failed to enqueue segment");
+                    planner
+                        .enqueue_segment()
+                        .expect("Failed to enqueue segment");
                     while let Some(tree_task) = planner.next_task() {
                         process_task(
                             &args_copy,
@@ -632,40 +634,40 @@ pub async fn executor(agent: &Agent, job_id: &Uuid, request: &ExecutorReq) -> Re
     // Write the guest stdout/stderr logs to object store after completing exec
     agent
         .s3_client
-        .write_file_to_s3(&format!("{EXEC_LOGS_BUCKET_DIR}/{job_id}.log"), &guest_log_path)
+        .write_file_to_s3(
+            &format!("{EXEC_LOGS_BUCKET_DIR}/{job_id}.log"),
+            &guest_log_path,
+        )
         .await
         .context("Failed to upload guest logs to object store")?;
 
     let journal_key = format!("{job_prefix}:journal");
 
-    match session.journal {
-        Some(journal) => {
-            if exec_only {
-                agent
-                    .s3_client
-                    .write_buf_to_s3(
-                        &format!("{PREFLIGHT_JOURNALS_BUCKET_DIR}/{job_id}.bin"),
-                        journal.bytes,
-                    )
-                    .await
-                    .context("Failed to write journal to obj store")?;
-            } else {
-                let serialized_journal =
-                    serialize_obj(&journal).context("Failed to serialize journal")?;
-
-                redis::set_key_with_expiry(
-                    &mut conn,
-                    &journal_key,
-                    serialized_journal,
-                    Some(agent.args.redis_ttl),
+    if let Some(journal) = session.journal {
+        if exec_only {
+            agent
+                .s3_client
+                .write_buf_to_s3(
+                    &format!("{PREFLIGHT_JOURNALS_BUCKET_DIR}/{job_id}.bin"),
+                    journal.bytes,
                 )
-                .await?;
-            }
+                .await
+                .context("Failed to write journal to obj store")?;
+        } else {
+            let serialized_journal =
+                serialize_obj(&journal).context("Failed to serialize journal")?;
+
+            redis::set_key_with_expiry(
+                &mut conn,
+                &journal_key,
+                serialized_journal,
+                Some(agent.args.redis_ttl),
+            )
+            .await?;
         }
-        None => {
-            // Optionally handle the case where there is no journal
-            tracing::error!("No journal to update.");
-        }
+    } else {
+        // Optionally handle the case where there is no journal
+        tracing::warn!("No journal to update.");
     }
 
     // First join all tasks and collect results

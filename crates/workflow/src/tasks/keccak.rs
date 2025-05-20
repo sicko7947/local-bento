@@ -30,8 +30,7 @@ pub async fn keccak(
     task_id: &str,
     request: &KeccakReq,
 ) -> Result<()> {
-    let mut conn = redis::get_connection(&agent.redis_pool).await?;
-
+    let mut conn = agent.redis_pool.get().await?;
     let keccak_input_path = format!("job:{job_id}:{}:{}", COPROC_CB_PATH, request.claim_digest);
     let keccak_input: Vec<u8> = conn
         .get::<_, Vec<u8>>(&keccak_input_path)
@@ -46,7 +45,10 @@ pub async fn keccak(
     };
 
     if keccak_req.input.is_empty() {
-        anyhow::bail!("Received empty keccak input with claim_digest: {}", request.claim_digest);
+        anyhow::bail!(
+            "Received empty keccak input with claim_digest: {}",
+            request.claim_digest
+        );
     }
 
     tracing::info!("Keccak proving {}", request.claim_digest);

@@ -90,11 +90,17 @@ async fn stark_workflow(
 ) -> Result<(String, String)> {
     // elf/image
     let image_id = compute_image_id(&image).unwrap().to_string();
-    client.upload_img(&image_id, image).await.context("Failed to upload image")?;
+    client
+        .upload_img(&image_id, image)
+        .await
+        .context("Failed to upload image")?;
 
     // input
     std::fs::write("/tmp/input.bin", &input)?;
-    let input_id = client.upload_input(input).await.context("Failed to upload_input")?;
+    let input_id = client
+        .upload_input(input)
+        .await
+        .context("Failed to upload_input")?;
 
     tracing::info!("image_id: {image_id} | input_id: {input_id}");
 
@@ -107,7 +113,10 @@ async fn stark_workflow(
     let mut receipt_id = String::new();
 
     loop {
-        let res = session.status(client).await.context("Failed to get STARK status")?;
+        let res = session
+            .status(client)
+            .await
+            .context("Failed to get STARK status")?;
 
         match res.status.as_ref() {
             "RUNNING" => {
@@ -125,8 +134,10 @@ async fn stark_workflow(
                     .await
                     .context("Failed to download receipt")?;
 
-                receipt_id =
-                    client.upload_receipt(receipt).await.context("Failed to upload receipt")?;
+                receipt_id = client
+                    .upload_receipt(receipt)
+                    .await
+                    .context("Failed to upload receipt")?;
                 break;
             }
             _ => {
@@ -143,11 +154,15 @@ async fn stark_workflow(
 
 async fn stark_2_snark(session_id: String, client: ProvingClient) -> Result<()> {
     tracing::info!("STARK 2 SNARK job_id: {}", session_id);
-    let snark_session =
-        client.create_snark(session_id).await.context("Failed to create SNARK session")?;
+    let snark_session = client
+        .create_snark(session_id)
+        .await
+        .context("Failed to create SNARK session")?;
     loop {
-        let res =
-            snark_session.status(&client).await.context("Failed to get snark session status")?;
+        let res = snark_session
+            .status(&client)
+            .await
+            .context("Failed to get snark session status")?;
         match res.status.as_ref() {
             "RUNNING" => {
                 tracing::info!("SNARK Job running....");

@@ -166,9 +166,7 @@ impl Agent {
             .connect(&args.database_url)
             .await
             .context("Failed to initialize postgresql pool")?;
-
         let redis_pool = crate::redis::create_pool(&args.redis_url)?;
-
         let s3_client = S3Client::from_minio(
             &args.s3_url,
             &args.s3_bucket,
@@ -224,7 +222,9 @@ impl Agent {
             let term_sig_copy = term_sig.clone();
             let db_pool_copy = self.db_pool.clone();
             tokio::spawn(async move {
-                Self::poll_for_requeue(term_sig_copy, db_pool_copy).await.expect("Requeue failed")
+                Self::poll_for_requeue(term_sig_copy, db_pool_copy)
+                    .await
+                    .expect("Requeue failed")
             });
         }
 
@@ -288,7 +288,9 @@ impl Agent {
             )
             .context("Failed to serialize prove response")?,
             TaskType::Join(req) => serde_json::to_value(
-                tasks::join::join(self, &task.job_id, &req).await.context("Join failed")?,
+                tasks::join::join(self, &task.job_id, &req)
+                    .await
+                    .context("Join failed")?,
             )
             .context("Failed to serialize join response")?,
             TaskType::Resolve(req) => serde_json::to_value(
@@ -316,7 +318,9 @@ impl Agent {
             )
             .context("failed to serialize keccak response")?,
             TaskType::Union(req) => serde_json::to_value(
-                tasks::union::union(self, &task.job_id, &req).await.context("Union failed")?,
+                tasks::union::union(self, &task.job_id, &req)
+                    .await
+                    .context("Union failed")?,
             )
             .context("failed to serialize union response")?,
         };

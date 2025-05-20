@@ -4,7 +4,7 @@
 
 use anyhow::{bail, Context, Result};
 use clap::Parser;
-use rand::{rngs::StdRng, seq::SliceRandom, Rng, SeedableRng};
+use rand::{rngs::StdRng, seq::IndexedRandom as _, Rng, SeedableRng};
 use sqlx::{
     postgres::PgPoolOptions,
     types::{JsonValue, Uuid},
@@ -47,7 +47,9 @@ async fn spawner(shutdown: Arc<AtomicBool>, pool: PgPool, args: Args) -> Result<
     for idx in 0..args.customers {
         let user_id = format!("user_{idx}");
         customers.push((
-            create_customer(&pool, &user_id).await.context("Failed to create customer")?,
+            create_customer(&pool, &user_id)
+                .await
+                .context("Failed to create customer")?,
             user_id,
         ));
     }
@@ -56,7 +58,7 @@ async fn spawner(shutdown: Arc<AtomicBool>, pool: PgPool, args: Args) -> Result<
     while !shutdown.load(Ordering::Relaxed) {
         // Pick a random
         let ((cpu_stream, gpu_stream), user_id) = customers.choose(&mut r).unwrap();
-        let segment_count = r.gen_range(1..args.max_job_size);
+        let segment_count = r.random_range(1..args.max_job_size);
         let task_def = serde_json::json!({
             "cpu_stream": gpu_stream.to_string(),
             "gpu_stream": gpu_stream.to_string(),
@@ -70,7 +72,9 @@ async fn spawner(shutdown: Arc<AtomicBool>, pool: PgPool, args: Args) -> Result<
 
         if args.incra_mode {
             loop {
-                let job_status = taskdb::get_job_state(&pool, &job_id, user_id).await.unwrap();
+                let job_status = taskdb::get_job_state(&pool, &job_id, user_id)
+                    .await
+                    .unwrap();
                 if job_status != JobState::Running {
                     break;
                 }
@@ -86,11 +90,26 @@ async fn spawner(shutdown: Arc<AtomicBool>, pool: PgPool, args: Args) -> Result<
 
 async fn process_task(pool: &PgPool, tree_task: &Task, db_task: &ReadyTask) -> Result<()> {
     let user_id = db_task.task_def.get("user_id").unwrap().as_str().unwrap();
-    let cpu_stream = db_task.task_def.get("cpu_stream").unwrap().as_str().unwrap();
+    let cpu_stream = db_task
+        .task_def
+        .get("cpu_stream")
+        .unwrap()
+        .as_str()
+        .unwrap();
     let cpu_stream = Uuid::from_str(cpu_stream).unwrap();
-    let gpu_stream = db_task.task_def.get("gpu_stream").unwrap().as_str().unwrap();
+    let gpu_stream = db_task
+        .task_def
+        .get("gpu_stream")
+        .unwrap()
+        .as_str()
+        .unwrap();
     let gpu_stream = Uuid::from_str(gpu_stream).unwrap();
-    let keccak_stream = db_task.task_def.get("keccak_stream").unwrap().as_str().unwrap();
+    let keccak_stream = db_task
+        .task_def
+        .get("keccak_stream")
+        .unwrap()
+        .as_str()
+        .unwrap();
     let keccak_stream = Uuid::from_str(keccak_stream).unwrap();
 
     match tree_task.command {
@@ -288,7 +307,7 @@ async fn worker(
                     }
                     "GPU" => {
                         // wait random ms in range
-                        // let seconds = r.gen_range(1..args.gpu_work_speed);
+                        // let seconds = r.random_range(1..args.gpu_work_speed);
                         tracing::info!(
                             "[{worker_id}] GPU running for {} ms, job: {}:{}",
                             args.gpu_work_speed,
@@ -298,7 +317,7 @@ async fn worker(
                         sleep(Duration::from_millis(args.gpu_work_speed)).await;
 
                         // 1 in N chance to fail a task
-                        if r.gen_range(0..args.gpu_fail_rate) == 0 {
+                        if r.random_range(0..args.gpu_fail_rate) == 0 {
                             tracing::error!(
                                 "Intentionally failing job: {}:{}",
                                 task.job_id,
@@ -315,7 +334,7 @@ async fn worker(
                                     task.task_id
                                 );
                             }
-                        } else if r.gen_range(0..args.gpu_retry_rate) == 0 {
+                        } else if r.random_range(0..args.gpu_retry_rate) == 0 {
                             tracing::warn!("Retrying task {}:{}", task.job_id, task.task_id);
 
                             if !update_task_retry(&pool, &task.job_id, &task.task_id)
@@ -424,11 +443,17 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt().with_env_filter(EnvFilter::from_default_env()).init();
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::from_default_env())
+        .init();
 
     let args = Args::parse();
     let conn_url = std::env::var("DATABASE_URL").expect("Env var DATABASE_URL is required.");
-    let db = PgPoolOptions::new().max_connections(args.pool_size).connect(&conn_url).await.unwrap();
+    let db = PgPoolOptions::new()
+        .max_connections(args.pool_size)
+        .connect(&conn_url)
+        .await
+        .unwrap();
 
     let mut tasks = JoinSet::new();
     let shutdown = Arc::new(AtomicBool::new(false));
@@ -443,8 +468,9 @@ async fn main() -> Result<()> {
     let shutdown_copy = shutdown.clone();
     tasks.spawn(async move {
         while !shutdown_copy.load(Ordering::Relaxed) {
-            let requeued_tasks =
-                taskdb::requeue_tasks(&pool_copy, 100).await.expect("Failed to requeue tasks");
+            let requeued_tasks = taskdb::requeue_tasks(&pool_copy, 100)
+                .await
+                .expect("Failed to requeue tasks");
             if requeued_tasks > 0 {
                 tracing::warn!("requeued {requeued_tasks} tasks");
             }
@@ -471,7 +497,9 @@ async fn main() -> Result<()> {
     // ctrl-c handler
     let shutdown_copy = shutdown.clone();
     tokio::spawn(async move {
-        tokio::signal::ctrl_c().await.expect("Failed to register ctrl+c handler");
+        tokio::signal::ctrl_c()
+            .await
+            .expect("Failed to register ctrl+c handler");
         tracing::warn!("Starting Graceful shutdown, cleaning up...");
         shutdown_copy.store(true, Ordering::Relaxed);
     });

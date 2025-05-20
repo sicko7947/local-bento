@@ -19,11 +19,10 @@ use workflow_common::s3::{RECEIPT_BUCKET_DIR, STARK_BUCKET_DIR};
 /// Creates the final rollup receipt, uploads that to S3
 /// job path
 pub async fn finalize(agent: &Agent, job_id: &Uuid, request: &FinalizeReq) -> Result<()> {
-    let max_id = request.max_idx;
-    let mut conn = redis::get_connection(&agent.redis_pool).await?;
+    let mut conn = agent.redis_pool.get().await?;
 
     let job_prefix = format!("job:{job_id}");
-    let root_receipt_key = format!("{job_prefix}:{RECUR_RECEIPT_PATH}:{max_id}");
+    let root_receipt_key = format!("{job_prefix}:{RECUR_RECEIPT_PATH}:{}", request.max_idx);
 
     // pull the root receipt from redis
     let root_receipt: Vec<u8> = conn
@@ -52,7 +51,9 @@ pub async fn finalize(agent: &Agent, job_id: &Uuid, request: &FinalizeReq) -> Re
         .with_context(|| format!("Journal data not found for key ID: {image_key}"))?;
     let image_id = read_image_id(&image_id_string)?;
 
-    rollup_receipt.verify(image_id).context("Receipt verification failed")?;
+    rollup_receipt
+        .verify(image_id)
+        .context("Receipt verification failed")?;
 
     if !matches!(rollup_receipt.inner, InnerReceipt::Succinct(_)) {
         bail!("rollup_receipt is not Succinct")
