@@ -1,7 +1,6 @@
 # Wiki Documentation for https://github.com/sicko7947/local-bento
 
 Generated on: 2025-05-20 21:17:24
-- [中文](#)
 
 ## Table of Contents
 

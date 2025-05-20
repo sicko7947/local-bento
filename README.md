@@ -1,6 +1,7 @@
 # Wiki Documentation for https://github.com/sicko7947/local-bento
 
 Generated on: 2025-05-20 21:21:46
+- [中文](https://github.com/sicko7947/local-bento/blob/main/README_CN.md)
 
 ## Table of Contents
 
