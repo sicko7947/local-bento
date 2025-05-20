@@ -1,0 +1,192 @@
+syntax = "proto3";
+
+package bento.v1;
+
+import "google/protobuf/any.proto";
+import "google/protobuf/timestamp.proto";
+
+// Service to manage tasks and artifacts for the Bento Proving System.
+service BentoTaskService {
+    // Worker requests a task to execute.
+    // The server will attempt to assign a suitable task based on worker capabilities.
+    rpc GetTask(GetTaskRequest) returns (GetTaskResponse);
+
+    // Worker updates the status of an assigned task.
+    rpc UpdateTaskStatus(UpdateTaskStatusRequest) returns (UpdateTaskStatusResponse);
+
+    // Worker uploads an artifact (e.g., input, ELF image, proof, receipt) via a client-side stream.
+    // The first message in the stream must be ArtifactInfo, followed by data chunks.
+    rpc UploadArtifact(stream UploadArtifactRequest) returns (UploadArtifactResponse);
+
+    // Worker downloads an artifact (e.g., input, ELF image, receipt) via a server-side stream.
+    // The first message in the stream will be ArtifactInfo, followed by data chunks.
+    rpc DownloadArtifact(DownloadArtifactRequest) returns (stream DownloadArtifactResponse);
+}
+
+// --------------- Enumerations ---------------
+
+enum TaskType {
+    TASK_TYPE_UNSPECIFIED = 0;
+    TASK_TYPE_EXECUTOR = 1;         // Executes a RISC-V program
+    TASK_TYPE_SNARK = 2;            // Converts a STARK proof to a SNARK proof
+    TASK_TYPE_FINALIZE = 3;         // Finalizes a job, e.g., creating a rollup receipt
+    TASK_TYPE_SEGMENT = 4;          // Task related to segment processing
+    TASK_TYPE_KECCAK = 5;           // Performs a Keccak computation
+    TASK_TYPE_JOIN = 6;             // Joins two receipts
+    TASK_TYPE_RESOLVE = 7;          // Resolves a set of receipts
+    TASK_TYPE_UNION = 8;            // Combines receipts in a union operation
+    TASK_TYPE_PROVE = 9;            // Generates a proof for a segment
+}
+
+enum TaskStatus {
+    TASK_STATUS_UNSPECIFIED = 0;
+    TASK_STATUS_PENDING = 1;        // Task is created, dependencies not met or not scheduled
+    TASK_STATUS_READY = 2;          // Task is ready to be picked up by a worker
+    TASK_STATUS_RUNNING = 3;        // Task is currently being processed
+    TASK_STATUS_SUCCEEDED = 4;      // Task completed successfully
+    TASK_STATUS_FAILED = 5;         // Task failed during execution
+    TASK_STATUS_CANCELED = 6;       // Task was canceled
+}
+
+enum CompressionType {
+    COMPRESSION_TYPE_UNSPECIFIED = 0;
+    COMPRESSION_TYPE_GROTH16 = 1;
+    // Add other compression types like PLONKY2 if supported
+}
+
+enum ArtifactType {
+    ARTIFACT_TYPE_UNSPECIFIED = 0;
+    ARTIFACT_TYPE_INPUT = 1;                // Input data for a task
+    ARTIFACT_TYPE_ELF_IMAGE = 2;            // Executable ELF file
+    ARTIFACT_TYPE_STARK_RECEIPT = 3;
+    ARTIFACT_TYPE_GROTH16_PROOF = 4;
+    ARTIFACT_TYPE_GROTH16_RECEIPT = 5;
+    ARTIFACT_TYPE_JOURNAL = 6;              // Execution journal
+    ARTIFACT_TYPE_LOG = 7;                  // Task execution logs
+    ARTIFACT_TYPE_PREFLIGHT_JOURNAL = 8;    // Preflight journal
+}
+
+enum RollupType {
+    ROLLUP_TYPE_UNSPECIFIED = 0;
+    ROLLUP_TYPE_SEGMENT = 1;
+    ROLLUP_TYPE_TREE = 2;
+}
+
+enum ProveReceiptType {
+    PROVE_RECEIPT_TYPE_UNSPECIFIED = 0;
+    PROVE_RECEIPT_TYPE_SEGMENT = 1;
+    PROVE_RECEIPT_TYPE_LIFTED = 2;
+}
+
+
+// --------------- Core Message Definitions ---------------
+
+message Task {
+    string job_id = 1;                      // UUID of the parent job
+    string task_id = 2;                     // UUID of this specific task
+    TaskType task_type = 3;
+    google.protobuf.Any task_definition = 4; // Contains task-specific parameters, e.g., ExecutorTaskDefinition, SnarkTaskDefinition.
+                                            // Client and server must agree on type URLs (e.g., "type.googleapis.com/bento.v1.ExecutorTaskDefinition")
+    TaskStatus status = 5;
+    repeated string prerequisite_task_ids = 6; // List of task IDs that must complete before this one
+    int32 max_retries = 7;                  // Maximum number of retries for this task
+    int32 timeout_seconds = 8;              // Timeout for task execution
+    optional string assigned_worker_id = 9; // ID of the worker this task is currently assigned to
+    google.protobuf.Timestamp created_at = 10;
+    google.protobuf.Timestamp updated_at = 11;
+    map<string, string> metadata = 12;      // General purpose key-value metadata (e.g., user_id, session_id)
+}
+
+// Specific task definitions to be packed into Task.task_definition
+
+message ExecutorTaskDefinition {
+    string image_id = 1;                    // ELF image ID (hash)
+    string input_id = 2;                    // Input data ID
+    optional uint64 exec_limit = 3;         // Execution cycle limit
+    bool profile_execution = 4;             // Whether to profile the execution
+    bool assume_cache_hit = 5;              // Corresponds to 'assume_cache' in ExecutorReq
+    map<string, string> environment_variables = 6; // Environment variables for execution
+}
+
+message SnarkTaskDefinition {
+    string stark_receipt_id = 1;            // UUID of the STARK receipt to be converted
+    CompressionType compress_type = 2;
+}
+
+message FinalizeTaskDefinition {
+    string job_id_to_finalize = 1;          // The original job_id whose results are being finalized
+    uint32 max_idx = 2;                     // From FinalizeReq
+    RollupType rollup_type = 3;             // From FinalizeReq
+}
+
+message ProveTaskDefinition {
+    string job_id_for_segment = 1;          // The job this segment belongs to
+    uint32 segment_idx = 2;
+    ProveReceiptType receipt_type = 3;
+}
+
+
+// --------------- RPC Request/Response Messages ---------------
+
+// GetTask Messages
+message GetTaskRequest {
+    string worker_id = 1;                   // Unique identifier for the worker
+    repeated string worker_capabilities = 2; // List of capabilities (e.g., "CPU_PROVER", "GPU_PROVER_CUDA", "SNARK_CIRCUIT_XYZ")
+}
+
+message GetTaskResponse {
+    optional Task task = 1;                 // The task assigned to the worker. If no task is available, this will be absent.
+}
+
+// UpdateTaskStatus Messages
+message UpdateTaskStatusRequest {
+    string job_id = 1;
+    string task_id = 2;
+    TaskStatus status = 3;
+    optional string error_message = 4;      // Detailed error if status is FAILED
+    optional string result_artifact_id = 5; // ID of the primary output artifact (e.g., proof_id, receipt_id)
+                                            // This artifact should have been uploaded via UploadArtifact.
+    map<string, string> additional_results_metadata = 6; // Key-value pairs for other results or metadata (e.g., S3 URLs if not streamed)
+    optional float progress_percentage = 7; // For long-running tasks to report progress (0.0 to 100.0)
+}
+
+message UpdateTaskStatusResponse {
+    bool acknowledged = 1;                  // Confirmation that the status update was received
+}
+
+// ArtifactInfo: Metadata for an artifact, sent as the first message in an upload/download stream.
+message ArtifactInfo {
+    string artifact_id = 1;                 // Unique ID for the artifact (e.g., input_hash, image_hash, proof_uuid)
+    ArtifactType artifact_type = 2;
+    optional string filename = 3;           // Original filename, if applicable
+    optional int64 total_size_bytes = 4;    // Total size of the artifact, if known beforehand
+    map<string, string> metadata = 5;       // Additional metadata (e.g., "job_id", "task_id" if it's a task output)
+}
+
+// UploadArtifact Messages
+message UploadArtifactRequest {
+    oneof data {
+        ArtifactInfo info = 1;              // Must be the first message in the stream
+        bytes chunk = 2;                    // Subsequent messages containing chunks of the artifact data
+    }
+}
+
+message UploadArtifactResponse {
+    string artifact_id = 1;                 // Confirmed ID of the uploaded artifact
+    string status_message = 2;              // e.g., "Upload successful"
+    optional string storage_url = 3;        // Optional: URL where the artifact is stored (e.g., an S3 URL if the gRPC service handles final S3 upload)
+    int64 bytes_received = 4;
+}
+
+// DownloadArtifact Messages
+message DownloadArtifactRequest {
+    string artifact_id = 1;
+    ArtifactType artifact_type = 2;
+}
+
+message DownloadArtifactResponse {
+    oneof data {
+        ArtifactInfo info = 1;              // First message in the stream, confirming artifact details
+        bytes chunk = 2;                    // Subsequent messages containing chunks of the artifact data
+    }
+}

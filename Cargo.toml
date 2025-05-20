@@ -4,6 +4,7 @@ members = [
     "crates/api",
     "crates/bento-client",
     "crates/taskdb",
+    "crates/grpc-client",
     "crates/workflow",
     "crates/workflow-common"
 ]
@@ -15,6 +16,7 @@ homepage = "https://beboundless.xyz/"
 repository = "https://github.com/boundless-xyz/boundless/"
 
 [workspace.dependencies]
+tonic = "0.13"
 anyhow = { version = "1.0" }
 aws-sdk-s3 = "1.34" # used for minio for max compatibility
 bento-client = { path = "crates/bento-client" }
