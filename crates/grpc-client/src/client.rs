@@ -1,14 +1,13 @@
 use anyhow::Result;
 use tonic::transport::{Channel, Endpoint};
-use tonic::{Request, Streaming}; // Added Request and Streaming
-use futures_core::Stream; // Added for stream arguments
+use tonic::{Request, Streaming}; // 仍然需要Streaming用于RequestTask
 
 use crate::bento::v1::{
-    bento_service_client::BentoServiceClient, // Corrected import
+    bento_service_client::BentoServiceClient, 
     RequestTaskRequest, 
     TaskAssignment, 
     UpdateTaskProgressRequest,
-    ServerInstruction, // Added for StreamTaskUpdates
+    UpdateTaskProgressResponse, // 添加一元响应类型
     UploadGroth16ResultRequest, 
     UploadGroth16ResultResponse, 
     UploadStarkResultRequest, 
@@ -47,45 +46,20 @@ impl BentoClient {
         Ok(response.into_inner())
     }
 
-    /// Establishes a bi-directional stream for task progress updates and server instructions.
-    /// The client sends a stream of `UpdateTaskProgressRequest`.
-    /// The server returns a stream of `ServerInstruction`.
-    pub async fn stream_task_updates(
-        &mut self,
-        request_stream: impl Stream<Item = UpdateTaskProgressRequest> + Send + Sync + 'static,
-    ) -> Result<Streaming<ServerInstruction>> {
-        let response = self
-            .client
-            .stream_task_updates(Request::new(request_stream))
-            .await?;
+    /// Sends a task progress update to the server.
+    /// Returns the server's response with any instructions.
+    pub async fn update_task_progress( &mut self,request: UpdateTaskProgressRequest) -> Result<UpdateTaskProgressResponse> {
+        let response = self.client.update_task_progress(Request::new(request)).await?;
         Ok(response.into_inner())
     }
 
-    /// Uploads a STARK proof result to the server using a client stream.
-    /// The client sends a stream of `UploadStarkResultRequest` (metadata then data chunks).
-    /// The server returns a single `UploadStarkResultResponse`.
-    pub async fn upload_stark_result(
-        &mut self,
-        request_stream: impl Stream<Item = UploadStarkResultRequest> + Send + Sync + 'static,
-    ) -> Result<UploadStarkResultResponse> {
-        let response = self
-            .client
-            .upload_stark_result(Request::new(request_stream))
-            .await?;
+    pub async fn upload_groth16_result(&mut self, request: UploadGroth16ResultRequest) -> Result<UploadGroth16ResultResponse> {
+        let response = self.client.upload_groth16_result(Request::new(request)).await?;
         Ok(response.into_inner())
     }
-
-    /// Uploads a Groth16 proof result to the server using a client stream.
-    /// The client sends a stream of `UploadGroth16ResultRequest` (metadata then data chunks).
-    /// The server returns a single `UploadGroth16ResultResponse`.
-    pub async fn upload_groth16_result(
-        &mut self,
-        request_stream: impl Stream<Item = UploadGroth16ResultRequest> + Send + Sync + 'static,
-    ) -> Result<UploadGroth16ResultResponse> {
-        let response = self
-            .client
-            .upload_groth16_result(Request::new(request_stream))
-            .await?;
+    
+    pub async fn upload_stark_result(&mut self, request: UploadStarkResultRequest) -> Result<UploadStarkResultResponse> {
+        let response = self.client.upload_stark_result(Request::new(request)).await?;
         Ok(response.into_inner())
     }
 }

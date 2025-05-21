@@ -13,8 +13,8 @@ pub struct RequestTaskRequest {
     /// Identifier for the client worker. Can be used for logging, metrics, or client-specific logic.
     ///
     /// in MB
-    #[prost(int64, tag = "1")]
-    pub gpu_memory: i64,
+    #[prost(uint64, tag = "1")]
+    pub gpu_memory: u64,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct TaskAssignment {
@@ -73,126 +73,61 @@ pub struct UpdateTaskProgressRequest {
     /// Optional: human-readable status message, or error details if status is FAILED.
     #[prost(string, tag = "3")]
     pub message: ::prost::alloc::string::String,
-    /// Optional: progress metrics from the client, similar to SessionStats.
-    /// These would be relevant during EXECUTING_VM or GENERATING_PROOF stages.
-    ///
     /// For STARK execution.
-    #[prost(uint64, tag = "4")]
-    pub current_cycles: u64,
-    /// For STARK execution.
-    #[prost(uint32, tag = "5")]
-    pub current_segments: u32,
+    #[prost(uint64, optional, tag = "4")]
+    pub total_segments: ::core::option::Option<u64>,
     /// For STARK execution, if known upon completion of execution.
-    #[prost(uint64, tag = "6")]
-    pub total_cycles: u64,
+    #[prost(uint64, optional, tag = "5")]
+    pub total_cycles: ::core::option::Option<u64>,
 }
 /// Typically empty. Could be used for server to acknowledge or send commands (e.g., cancel).
 #[derive(Clone, Copy, PartialEq, ::prost::Message)]
 pub struct UpdateTaskProgressResponse {}
-/// Message for server to send instructions to the client during a task.
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct ServerInstruction {
-    /// The task_id this instruction pertains to.
-    #[prost(string, tag = "1")]
-    pub task_id: ::prost::alloc::string::String,
-    #[prost(oneof = "server_instruction::InstructionType", tags = "2, 3")]
-    pub instruction_type: ::core::option::Option<server_instruction::InstructionType>,
-}
-/// Nested message and enum types in `ServerInstruction`.
-pub mod server_instruction {
-    #[derive(Clone, PartialEq, ::prost::Oneof)]
-    pub enum InstructionType {
-        /// Acknowledges a client update.
-        #[prost(message, tag = "2")]
-        AcknowledgeUpdate(super::AcknowledgeUpdate),
-        /// Commands the client to cancel the task.
-        #[prost(message, tag = "3")]
-        CancelTask(super::CancelTaskCommand),
-    }
-}
-/// Optional: could include a sequence number or specific confirmation details.
-#[derive(Clone, Copy, PartialEq, ::prost::Message)]
-pub struct AcknowledgeUpdate {}
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct CancelTaskCommand {
-    /// Optional reason for cancellation.
-    #[prost(string, tag = "1")]
-    pub reason: ::prost::alloc::string::String,
-}
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct UploadStarkResultRequest {
-    /// This message is streamed from client to server.
-    /// The client should first send a message containing 'metadata'.
-    /// Subsequent messages should contain 'data_chunk' for the file being uploaded.
-    /// If multiple files (e.g., receipt and then journal) are sent for the same task_id
-    /// over the same stream, each file should start with its own 'metadata' message.
-    #[prost(oneof = "upload_stark_result_request::Payload", tags = "1, 2")]
-    pub payload: ::core::option::Option<upload_stark_result_request::Payload>,
-}
-/// Nested message and enum types in `UploadStarkResultRequest`.
-pub mod upload_stark_result_request {
-    /// This message is streamed from client to server.
-    /// The client should first send a message containing 'metadata'.
-    /// Subsequent messages should contain 'data_chunk' for the file being uploaded.
-    /// If multiple files (e.g., receipt and then journal) are sent for the same task_id
-    /// over the same stream, each file should start with its own 'metadata' message.
-    #[derive(Clone, PartialEq, ::prost::Oneof)]
-    pub enum Payload {
-        #[prost(message, tag = "1")]
-        Metadata(super::StarkUploadMetadata),
-        /// A chunk of the file data.
-        #[prost(bytes, tag = "2")]
-        DataChunk(::prost::alloc::vec::Vec<u8>),
-    }
-}
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct StarkUploadMetadata {
+    /// Task ID this result belongs to
     #[prost(string, tag = "1")]
     pub task_id: ::prost::alloc::string::String,
-    /// Describes the content of the following data_chunks, e.g., "receipt", "journal_data".
-    #[prost(string, tag = "2")]
-    pub file_description: ::prost::alloc::string::String,
-    /// Optionally, total size of the file if known, for progress tracking.
-    #[prost(int64, tag = "3")]
-    pub total_file_size: i64,
+    /// The complete STARK receipt data
+    #[prost(bytes = "vec", tag = "2")]
+    pub receipt_data: ::prost::alloc::vec::Vec<u8>,
+    /// Optional journal data
+    #[prost(bytes = "vec", tag = "3")]
+    pub journal_data: ::prost::alloc::vec::Vec<u8>,
+    /// Optional metadata about the proof
+    #[prost(string, tag = "4")]
+    pub description: ::prost::alloc::string::String,
 }
-/// Typically empty. Server acknowledges receipt of the full stream.
-#[derive(Clone, Copy, PartialEq, ::prost::Message)]
-pub struct UploadStarkResultResponse {}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct UploadStarkResultResponse {
+    /// Confirmation that the server received and processed the upload
+    #[prost(bool, tag = "1")]
+    pub success: bool,
+    /// Error message if any
+    #[prost(string, tag = "2")]
+    pub error_message: ::prost::alloc::string::String,
+}
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct UploadGroth16ResultRequest {
-    /// This message is streamed from client to server.
-    /// Similar to UploadStarkResultRequest, metadata first, then data_chunks.
-    #[prost(oneof = "upload_groth16_result_request::Payload", tags = "1, 2")]
-    pub payload: ::core::option::Option<upload_groth16_result_request::Payload>,
-}
-/// Nested message and enum types in `UploadGroth16ResultRequest`.
-pub mod upload_groth16_result_request {
-    /// This message is streamed from client to server.
-    /// Similar to UploadStarkResultRequest, metadata first, then data_chunks.
-    #[derive(Clone, PartialEq, ::prost::Oneof)]
-    pub enum Payload {
-        #[prost(message, tag = "1")]
-        Metadata(super::Groth16UploadMetadata),
-        /// A chunk of the Groth16 proof data.
-        #[prost(bytes, tag = "2")]
-        DataChunk(::prost::alloc::vec::Vec<u8>),
-    }
-}
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct Groth16UploadMetadata {
+    /// Task ID this result belongs to
     #[prost(string, tag = "1")]
     pub task_id: ::prost::alloc::string::String,
-    /// Describes the content, e.g., "groth16_proof".
-    #[prost(string, tag = "2")]
-    pub file_description: ::prost::alloc::string::String,
-    /// Optionally, total size of the file if known.
-    #[prost(int64, tag = "3")]
-    pub total_file_size: i64,
+    /// The complete Groth16 proof data
+    #[prost(bytes = "vec", tag = "2")]
+    pub proof_data: ::prost::alloc::vec::Vec<u8>,
+    /// Optional metadata about the proof
+    #[prost(string, tag = "3")]
+    pub description: ::prost::alloc::string::String,
 }
-/// Typically empty. Server acknowledges receipt of the full stream.
-#[derive(Clone, Copy, PartialEq, ::prost::Message)]
-pub struct UploadGroth16ResultResponse {}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct UploadGroth16ResultResponse {
+    /// Confirmation that the server received and processed the upload
+    #[prost(bool, tag = "1")]
+    pub success: bool,
+    /// Error message if any
+    #[prost(string, tag = "2")]
+    pub error_message: ::prost::alloc::string::String,
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum TaskStatus {
@@ -200,18 +135,14 @@ pub enum TaskStatus {
     Unspecified = 0,
     /// Task assigned, client is preparing.
     Pending = 1,
-    /// Client is downloading ELF/input/receipt (if server provided URLs instead of bytes).
-    DownloadingAssets = 2,
-    /// Client is running the ZKVM execution.
-    ExecutingVm = 3,
     /// Client is generating the STARK or Groth16 proof.
-    GeneratingProof = 4,
+    GeneratingProof = 2,
     /// Client is uploading the proof/journal.
-    UploadingResult = 5,
+    UploadingProof = 3,
     /// Task completed successfully by the client.
-    Completed = 6,
+    Completed = 4,
     /// Task failed on the client.
-    Failed = 7,
+    Failed = 5,
 }
 impl TaskStatus {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -222,10 +153,8 @@ impl TaskStatus {
         match self {
             Self::Unspecified => "TASK_STATUS_UNSPECIFIED",
             Self::Pending => "PENDING",
-            Self::DownloadingAssets => "DOWNLOADING_ASSETS",
-            Self::ExecutingVm => "EXECUTING_VM",
             Self::GeneratingProof => "GENERATING_PROOF",
-            Self::UploadingResult => "UPLOADING_RESULT",
+            Self::UploadingProof => "UPLOADING_PROOF",
             Self::Completed => "COMPLETED",
             Self::Failed => "FAILED",
         }
@@ -235,10 +164,8 @@ impl TaskStatus {
         match value {
             "TASK_STATUS_UNSPECIFIED" => Some(Self::Unspecified),
             "PENDING" => Some(Self::Pending),
-            "DOWNLOADING_ASSETS" => Some(Self::DownloadingAssets),
-            "EXECUTING_VM" => Some(Self::ExecutingVm),
             "GENERATING_PROOF" => Some(Self::GeneratingProof),
-            "UPLOADING_RESULT" => Some(Self::UploadingResult),
+            "UPLOADING_PROOF" => Some(Self::UploadingProof),
             "COMPLETED" => Some(Self::Completed),
             "FAILED" => Some(Self::Failed),
             _ => None,
@@ -363,14 +290,12 @@ pub mod bento_service_client {
                 .insert(GrpcMethod::new("bento.v1.BentoService", "RequestTask"));
             self.inner.server_streaming(req, path, codec).await
         }
-        /// Client sends updates on the progress of a task, and server can send instructions.
-        pub async fn stream_task_updates(
+        /// Client sends a single update on the progress of a task, and server sends back instructions.
+        pub async fn update_task_progress(
             &mut self,
-            request: impl tonic::IntoStreamingRequest<
-                Message = super::UpdateTaskProgressRequest,
-            >,
+            request: impl tonic::IntoRequest<super::UpdateTaskProgressRequest>,
         ) -> std::result::Result<
-            tonic::Response<tonic::codec::Streaming<super::ServerInstruction>>,
+            tonic::Response<super::UpdateTaskProgressResponse>,
             tonic::Status,
         > {
             self.inner
@@ -383,19 +308,18 @@ pub mod bento_service_client {
                 })?;
             let codec = tonic::codec::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
-                "/bento.v1.BentoService/StreamTaskUpdates",
+                "/bento.v1.BentoService/UpdateTaskProgress",
             );
-            let mut req = request.into_streaming_request();
+            let mut req = request.into_request();
             req.extensions_mut()
-                .insert(GrpcMethod::new("bento.v1.BentoService", "StreamTaskUpdates"));
-            self.inner.streaming(req, path, codec).await
+                .insert(GrpcMethod::new("bento.v1.BentoService", "UpdateTaskProgress"));
+            self.inner.unary(req, path, codec).await
         }
         /// Client uploads the resulting STARK proof and optionally the journal.
+        /// Changed from streaming to unary since proofs are small
         pub async fn upload_stark_result(
             &mut self,
-            request: impl tonic::IntoStreamingRequest<
-                Message = super::UploadStarkResultRequest,
-            >,
+            request: impl tonic::IntoRequest<super::UploadStarkResultRequest>,
         ) -> std::result::Result<
             tonic::Response<super::UploadStarkResultResponse>,
             tonic::Status,
@@ -412,17 +336,16 @@ pub mod bento_service_client {
             let path = http::uri::PathAndQuery::from_static(
                 "/bento.v1.BentoService/UploadStarkResult",
             );
-            let mut req = request.into_streaming_request();
+            let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("bento.v1.BentoService", "UploadStarkResult"));
-            self.inner.client_streaming(req, path, codec).await
+            self.inner.unary(req, path, codec).await
         }
-        /// Client uploads the resulting Groth16 proof (potentially in chunks).
+        /// Client uploads the resulting Groth16 proof.
+        /// Changed from streaming to unary since proofs are small
         pub async fn upload_groth16_result(
             &mut self,
-            request: impl tonic::IntoStreamingRequest<
-                Message = super::UploadGroth16ResultRequest,
-            >,
+            request: impl tonic::IntoRequest<super::UploadGroth16ResultRequest>,
         ) -> std::result::Result<
             tonic::Response<super::UploadGroth16ResultResponse>,
             tonic::Status,
@@ -439,10 +362,10 @@ pub mod bento_service_client {
             let path = http::uri::PathAndQuery::from_static(
                 "/bento.v1.BentoService/UploadGroth16Result",
             );
-            let mut req = request.into_streaming_request();
+            let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("bento.v1.BentoService", "UploadGroth16Result"));
-            self.inner.client_streaming(req, path, codec).await
+            self.inner.unary(req, path, codec).await
         }
     }
 }

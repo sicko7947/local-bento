@@ -7,16 +7,26 @@
 //! Workflow processing Agent service
 
 use crate::redis::RedisPool;
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::Parser;
+use futures::lock::Mutex;
+use grpc_client::bento::v1::{
+    RequestTaskRequest,
+    TaskAssignment,
+    UpdateTaskProgressRequest,
+    UploadGroth16ResultRequest,
+    UploadGroth16ResultResponse,
+    UploadStarkResultRequest,
+    UploadStarkResultResponse,
+};
+use nvml_wrapper::Nvml;
 use risc0_zkvm::{get_prover_server, ProverOpts, ProverServer, VerifierContext};
 use sqlx::postgres::{PgPool, PgPoolOptions};
 use std::{
-    rc::Rc,
-    sync::{
+    rc::Rc, sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
-    },
+    }
 };
 use taskdb::ReadyTask;
 use tokio::time;
@@ -95,6 +105,15 @@ pub struct Args {
     monitor_requeue: bool,
 
     // Task flags
+
+    /// How many times a task be running for, before it is marked as timed-out
+    #[clap(long, default_value_t = 0)]
+    exec_retries: i32,
+
+    /// How long can a task be running for, before it is marked as timed-out
+    #[clap(long, default_value_t = 4 * 60 * 60)]
+    exec_timeout: i32,
+
     /// How many times a prove+lift can fail before hard failure
     #[clap(long, default_value_t = 3)]
     prove_retries: i32,
@@ -136,6 +155,14 @@ pub struct Args {
     /// Snark retries
     #[clap(long, default_value_t = 0)]
     snark_retries: i32,
+
+    /// gRPC server endpoint for task polling
+    #[clap(env, long)]
+    pub grpc_endpoint: String,
+
+    /// Enable polling for gRPC tasks
+    #[clap(long, default_value_t = false)]
+    pub enable_grpc: bool,
 }
 
 /// Core agent context to hold all optional clients / pools and state
@@ -154,6 +181,10 @@ pub struct Agent {
     prover: Option<Rc<dyn ProverServer>>,
     /// risc0 verifier context
     verifier_ctx: VerifierContext,
+    /// gRPC client for task updates
+    grpc_client: Option<Arc<Mutex<grpc_client::BentoClient>>>,
+    /// GPU memory limit in MB
+    gpu_memory: u64,
 }
 
 impl Agent {
@@ -161,6 +192,15 @@ impl Agent {
     ///
     /// Starts any connection pools and establishes the agents configs
     pub async fn new(args: Args) -> Result<Self> {
+        let gpu_memory = (|| {
+            let nvml = Nvml::init()?;
+            let device = nvml.device_by_index(0)?;
+            let info = device.memory_info()?;
+            Ok::<_, nvml_wrapper::error::NvmlError>(info.total / 1024 / 1024) // Convert to MB
+        })().unwrap_or_else(|err| {
+            tracing::warn!("Failed to get GPU memory info: {}, defaulting to 0", err);
+            0
+        });
         let db_pool = PgPoolOptions::new()
             .max_connections(args.db_max_connections)
             .connect(&args.database_url)
@@ -188,6 +228,13 @@ impl Agent {
             None
         };
 
+        let grpc_client = if args.enable_grpc {
+            let client = grpc_client::BentoClient::new(args.grpc_endpoint.clone()).await?;
+            Some(Arc::new(Mutex::new(client)))
+        } else {
+            None
+        };
+
         Ok(Self {
             db_pool,
             segment_po2: args.segment_po2,
@@ -196,6 +243,8 @@ impl Agent {
             args,
             prover,
             verifier_ctx,
+            grpc_client,
+            gpu_memory,
         })
     }
 
@@ -274,7 +323,7 @@ impl Agent {
             .with_context(|| format!("Invalid task_def: {}:{}", task.job_id, task.task_id))?;
 
         // run the task
-        let res = match task_type {
+        let res = match &task_type {
             TaskType::Executor(req) => serde_json::to_value(
                 tasks::executor::executor(self, &task.job_id, &req)
                     .await
@@ -325,9 +374,10 @@ impl Agent {
             .context("failed to serialize union response")?,
         };
 
-        taskdb::update_task_done(&self.db_pool, &task.job_id, &task.task_id, res)
+        taskdb::update_task_done(&self.db_pool, &task.job_id, &task.task_id, res.clone())
             .await
             .context("Failed to report task done")?;
+        self.update_grpc_task_status_if_exists(&task.job_id, &task.task_id, &task_type, &res).await?;
 
         Ok(())
     }
@@ -345,6 +395,436 @@ impl Agent {
             }
             time::sleep(tokio::time::Duration::from_secs(5)).await;
         }
+
+        Ok(())
+    }
+
+    /// Starts the work polling, runs until sig_hook triggers
+    ///
+    /// This function will poll for work and dispatch to the [Self::process_grpc_task] function until
+    /// the process is terminated. It also handles retries / failures depending on the
+    /// [Self::process_grpc_task] result
+    pub async fn poll_grpc_tasks(&self) -> Result<()> {
+        let term_sig =
+            Self::create_sig_monitor().context("Failed to create signal hook for gRPC client")?;
+
+
+        let request = RequestTaskRequest {
+            gpu_memory: self.gpu_memory,
+        };
+
+        tracing::info!("Starting gRPC task polling");
+
+        while !term_sig.load(Ordering::Relaxed) {
+
+            if let Some(grpc_client_arc) = &self.grpc_client {
+                let mut client = grpc_client_arc.lock().await;
+                match client.request_task(request.clone()).await {
+                    Ok(mut stream) => {
+
+                        while let Some(task_assignment) =
+                            stream.message().await.context("Failed to receive task")?
+                        {
+                            match self.process_grpc_task(&task_assignment).await {
+                                Ok(_) => tracing::info!(
+                                    "Successfully processed gRPC task: {}",
+                                    task_assignment.task_id
+                                ),
+                                Err(err) => tracing::error!(
+                                    "Failed to process gRPC task: {}: {}",
+                                    task_assignment.task_id,
+                                    err
+                                ),
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        tracing::error!("Failed to request task from gRPC server: {}", err);
+                        time::sleep(time::Duration::from_secs(self.args.poll_time)).await;
+                    }
+                }
+            }
+
+            time::sleep(time::Duration::from_secs(self.args.poll_time)).await;
+        }
+
+        tracing::warn!("gRPC task polling terminated due to signal");
+        Ok(())
+    }
+
+    async fn process_grpc_task(&self, task: &TaskAssignment) -> Result<()> {
+        tracing::info!("Received gRPC task: {}", task.task_id);
+
+        if let Some(grpc_client_arc) = &self.grpc_client {
+            let mut client = grpc_client_arc.lock().await;
+            let update_request = UpdateTaskProgressRequest {
+                task_id: task.task_id.clone(),
+                status: grpc_client::bento::v1::TaskStatus::Pending as i32,
+                message: "Task received".to_string(),
+                total_segments: None,
+                total_cycles: None,
+            };
+            client.update_task_progress(update_request).await?;
+        }
+
+        match &task.task_details {
+            Some(grpc_client::bento::v1::task_assignment::TaskDetails::StarkTask(details)) => {
+                self.process_stark_task(task, details).await
+            }
+            Some(grpc_client::bento::v1::task_assignment::TaskDetails::Groth16Task(details)) => {
+                self.process_groth16_task(task, details).await
+            }
+            None => {
+                bail!("Task details not provided");
+            }
+        }
+    }
+
+    async fn process_stark_task(
+        &self,
+        task: &grpc_client::bento::v1::TaskAssignment,
+        details: &grpc_client::bento::v1::StarkTaskDetails,
+    ) -> Result<()> {
+        let image_id = &details.image_id;
+        let elf_data = &details.elf_data;
+        let execute_only = details.execute_only;
+        let exec_cycle_limit = details.exec_cycle_limit;
+
+        let mut assumptions = Vec::new();
+        for input in &details.assumption_inputs {
+            assumptions.push(input.id.clone());
+        }
+
+        let req = workflow_common::ExecutorReq {
+            image: image_id.clone(),
+            input: details
+                .input_data
+                .as_ref()
+                .map_or("".to_string(), |i| i.id.clone()),
+            user_id: "grpc".to_string(),
+            assumptions,
+            execute_only,
+            compress: workflow_common::CompressType::None,
+            exec_limit: if exec_cycle_limit > 0 {
+                Some(exec_cycle_limit)
+            } else {
+                None
+            },
+        };
+
+        let (
+            aux_stream,
+            exec_stream,
+            gpu_prove_stream,
+            _gpu_coproc_stream,
+            gpu_join_stream,
+            snark_stream,
+        ) = self.get_or_create_streams_for_grpc().await?;
+
+        let task_def = serde_json::to_value(workflow_common::TaskType::Executor(req))
+            .context("Failed to serialize ExecutorReq")?;
+
+        let job_id = taskdb::create_job(
+            &self.db_pool,
+            &exec_stream,
+            &task_def,
+            self.args.exec_retries,
+            self.args.exec_timeout,
+            "grpc",
+        )
+        .await
+        .context("Failed to create prove task for gRPC request")?;
+
+        let mut conn = self.redis_pool.get().await?;
+        redis::set_key_with_expiry(
+            &mut conn,
+            &task.task_id,
+            job_id.to_string().as_bytes().to_vec(),
+            Some(self.args.redis_ttl),
+        )
+        .await?;
+
+        Ok(())
+    }
+
+    async fn process_groth16_task(
+        &self,
+        task: &grpc_client::bento::v1::TaskAssignment,
+        details: &grpc_client::bento::v1::Groth16TaskDetails,
+    ) -> Result<()> {
+        let stark_original_task_id = &details.stark_original_task_id;
+        let stark_receipt_data = &details.stark_receipt_data;
+
+        let (
+            _aux_stream,
+            _exec_stream,
+            _gpu_prove_stream,
+            _gpu_coproc_stream,
+            _gpu_join_stream,
+            snark_stream,
+        ) = self.get_or_create_streams_for_grpc().await?;
+
+        let req = workflow_common::SnarkReq {
+            receipt: stark_original_task_id.clone(),
+            compress_type: workflow_common::CompressType::Groth16,
+        };
+
+        let task_def = serde_json::to_value(workflow_common::TaskType::Snark(req))
+            .context("Failed to serialize SnarkReq")?;
+
+        let job_id = taskdb::create_job(
+            &self.db_pool,
+            &snark_stream,
+            &task_def,
+            self.args.snark_retries,
+            self.args.snark_timeout,
+            "grpc",
+        )
+        .await
+        .context("Failed to create snark task for gRPC request")?;
+
+        let mut conn = self.redis_pool.get().await?;
+        redis::set_key_with_expiry(
+            &mut conn,
+            &task.task_id,
+            job_id.to_string().as_bytes().to_vec(),
+            Some(self.args.redis_ttl),
+        )
+        .await?;
+
+        Ok(())
+    }
+
+    async fn get_or_create_streams_for_grpc(
+        &self,
+    ) -> Result<(
+        uuid::Uuid,
+        uuid::Uuid,
+        uuid::Uuid,
+        uuid::Uuid,
+        uuid::Uuid,
+        uuid::Uuid,
+    )> {
+        let user_id = "grpc";
+        let worker_type = AUX_WORK_TYPE;
+
+        let aux_stream = match taskdb::get_stream(&self.db_pool, user_id, AUX_WORK_TYPE).await? {
+            Some(id) => id,
+            None => taskdb::create_stream(&self.db_pool, AUX_WORK_TYPE, 1, 1.0, user_id).await?,
+        };
+
+        let exec_stream = match taskdb::get_stream(&self.db_pool, user_id, EXEC_WORK_TYPE).await? {
+            Some(id) => id,
+            None => taskdb::create_stream(&self.db_pool, EXEC_WORK_TYPE, 1, 1.0, user_id).await?,
+        };
+
+        let gpu_prove_stream = match taskdb::get_stream(&self.db_pool, user_id, PROVE_WORK_TYPE)
+            .await?
+        {
+            Some(id) => id,
+            None => taskdb::create_stream(&self.db_pool, PROVE_WORK_TYPE, 2, 2.0, user_id).await?,
+        };
+
+        let gpu_coproc_stream = match taskdb::get_stream(&self.db_pool, user_id, COPROC_WORK_TYPE)
+            .await?
+        {
+            Some(id) => id,
+            None => taskdb::create_stream(&self.db_pool, COPROC_WORK_TYPE, 0, 1.0, user_id).await?,
+        };
+
+        let gpu_join_stream = match taskdb::get_stream(&self.db_pool, user_id, JOIN_WORK_TYPE)
+            .await?
+        {
+            Some(id) => id,
+            None => taskdb::create_stream(&self.db_pool, JOIN_WORK_TYPE, 0, 1.0, user_id).await?,
+        };
+
+        let snark_stream = match taskdb::get_stream(&self.db_pool, user_id, SNARK_WORK_TYPE).await?
+        {
+            Some(id) => id,
+            None => taskdb::create_stream(&self.db_pool, SNARK_WORK_TYPE, 0, 1.0, user_id).await?,
+        };
+
+        Ok((
+            aux_stream,
+            exec_stream,
+            gpu_prove_stream,
+            gpu_coproc_stream,
+            gpu_join_stream,
+            snark_stream,
+        ))
+    }
+
+    // async fn upload_task_result(&self, grpc_task_id: &str, job_id: &Uuid) -> Result<()> {
+    //     use grpc_client::bento::v1::{UploadGroth16ResultRequest, UploadStarkResultRequest};
+
+    //     tracing::info!("Uploading results for gRPC task: {}", grpc_task_id);
+
+    //     let tasks = taskdb::get_job_tasks(&self.db_pool, job_id).await?;
+
+    //     for task in tasks {
+    //         if task.state != taskdb::TaskState::Done {
+    //             continue;
+    //         }
+
+    //         // 寻找可能的STARK任务或GROTH16任务
+    //         let task_type: Option<TaskType> = serde_json::from_value(task.task_def.clone()).ok();
+
+    //         if let Some(task_type) = task_type {
+    //             match task_type {
+    //                 TaskType::Executor(_) => {
+    //                     // 查找receipt
+    //                     let receipt_path = format!("job:{}:{}", job_id, RECEIPT_PATH);
+    //                     let mut conn = self.redis_pool.get().await?;
+
+    //                     if let Ok(receipt_bytes) = conn.get::<_, Vec<u8>>(&receipt_path).await {
+    //                         // 上传STARK结果 - 使用一元调用
+    //                         let request = UploadStarkResultRequest {
+    //                             task_id: grpc_task_id.to_string(),
+    //                             receipt_data: receipt_bytes,
+    //                             journal_data: vec![], // 可以添加日志数据如果需要
+    //                             description: "STARK receipt from Executor task".to_string(),
+    //                         };
+
+    //                         if let Some(grpc_client_arc) = &self.grpc_client {
+    //                             let client = grpc_client_arc.lock().await;
+    //                             match &self.grpc_client.upload_stark_result(request).await {
+    //                                 Ok(response) => {
+    //                                     if response.success {
+    //                                         tracing::info!(
+    //                                             "Successfully uploaded STARK receipt for task: {}",
+    //                                             grpc_task_id
+    //                                         );
+    //                                     } else {
+    //                                         tracing::error!(
+    //                                             "Server rejected STARK upload: {}",
+    //                                             response.error_message
+    //                                         );
+    //                                     }
+    //                                 }
+    //                                 Err(e) => {
+    //                                     tracing::error!("Failed to upload STARK receipt: {}", e);
+    //                                 }
+    //                             }
+    //                         }
+    //                     }
+    //                 }
+    //                 TaskType::Snark(_) => {
+    //                     // 获取Groth16证明数据
+    //                     if let Some(output) = task.output {
+    //                         if let Ok(snark_resp) =
+    //                             serde_json::from_value::<workflow_common::SnarkResp>(output)
+    //                         {
+    //                             // 尝试从S3获取数据
+    //                             let snark_key = format!(
+    //                                 "{}/{}",
+    //                                 workflow_common::s3::GROTH16_BUCKET_DIR,
+    //                                 snark_resp.snark
+    //                             );
+
+    //                             match self.s3_client.get_object(&snark_key).await {
+    //                                 Ok(proof_bytes) => {
+    //                                     // 上传Groth16结果 - 使用一元调用
+    //                                     let request = UploadGroth16ResultRequest {
+    //                                         task_id: grpc_task_id.to_string(),
+    //                                         proof_data: proof_bytes,
+    //                                         description: "Groth16 proof from SNARK task"
+    //                                             .to_string(),
+    //                                     };
+
+    //                                     if let Some(grpc_client_arc) = &self.grpc_client {
+    //                                         let client = grpc_client_arc.lock().await;
+    //                                         match &client
+    //                                             .upload_groth16_result(request)
+    //                                             .await
+    //                                         {
+    //                                             Ok(response) => {
+    //                                                 if response.success {
+    //                                                     tracing::info!(
+    //                                                         "Successfully uploaded Groth16 proof for task: {}",
+    //                                                         grpc_task_id
+    //                                                     );
+    //                                                 } else {
+    //                                                     tracing::error!(
+    //                                                         "Server rejected Groth16 upload: {}",
+    //                                                         response.error_message
+    //                                                     );
+    //                                                 }
+    //                                             }
+    //                                             Err(e) => {
+    //                                                 tracing::error!(
+    //                                                     "Failed to upload Groth16 proof: {}",
+    //                                                     e
+    //                                                 );
+    //                                             }
+    //                                         }
+    //                                     }
+    //                                 }
+    //                                 Err(e) => {
+    //                                     tracing::error!(
+    //                                         "Failed to get Groth16 proof from S3: {}",
+    //                                         e
+    //                                     );
+    //                                 }
+    //                             }
+    //                         }
+    //                     }
+    //                 }
+    //                 _ => {}
+    //             }
+    //         }
+    //     }
+
+    //     Ok(())
+    // }
+
+    /// 检查任务是否关联了gRPC任务，如果是则更新其状态
+    async fn update_grpc_task_status_if_exists(&self, job_id: &uuid::Uuid, task_id: &String, task_type: &TaskType, res: &serde_json::Value) -> Result<()> {
+        // 如果gRPC客户端没有初始化，直接返回
+        if self.grpc_client.is_none() {
+            return Ok(());
+        }
+
+        // 从当前任务结果中提取cycles和segments信息
+        let mut status: i32 = 0;
+        let mut total_segments: Option<u64> = None;
+        let mut total_cycles: Option<u64> = None;
+
+        // 根据任务类型和结果提取指标
+        match task_type {
+            TaskType::Executor(_) => {
+                status = grpc_client::bento::v1::TaskStatus::GeneratingProof as i32;
+                if let Ok(exec_resp) = serde_json::from_value::<workflow_common::ExecutorResp>(res.clone()){
+                    total_cycles = Some(exec_resp.total_cycles);
+                    total_segments = Some(exec_resp.segments);
+                }
+            }
+            TaskType::Finalize(_) => {
+                status = grpc_client::bento::v1::TaskStatus::Completed as i32;
+            }
+            TaskType::Snark(_) => {
+                status = grpc_client::bento::v1::TaskStatus::Completed as i32;
+            }
+            _ => {
+                status = grpc_client::bento::v1::TaskStatus::GeneratingProof as i32;
+            }
+        }
+
+
+        // 创建状态更新请求，包含从当前任务中提取的cycles和segments信息
+        let update_request = grpc_client::bento::v1::UpdateTaskProgressRequest {
+            task_id: job_id.to_string(),
+            status,
+            message: format!("Task completed: {:?}", task_type),
+            total_segments,
+            total_cycles,
+        };
+
+        // 获取gRPC客户端并发送更新
+        if let Some(grpc_client_arc) = &self.grpc_client {
+            let mut client = grpc_client_arc.lock().await;
+            client.update_task_progress(update_request).await?;
+        };
 
         Ok(())
     }
