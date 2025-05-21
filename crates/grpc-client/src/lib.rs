@@ -1,23 +1,13 @@
-pub mod gen {
-    // Include the generated gRPC code
-    pub mod bento {
-        pub mod v1 {
-            tonic::include_proto!("bento.v1");
-        }
+// Re-export generated code from protobuf
+pub mod bento {
+    pub mod v1 {
+        include!("gen/bento.v1.rs");
+        
+        // Re-export the service client
+        pub use self::bento_task_service_client::BentoTaskServiceClient;
     }
 }
 
+// Export client module
 mod client;
-
-// Re-exports
-pub use client::BentoClient;
-
-// Export the key types from the generated code
-pub use gen::bento::v1::{
-    bento_task_service_client, // Add this
-    ArtifactInfo, ArtifactType, CompressionType, DownloadArtifactRequest, DownloadArtifactResponse,
-    ExecutorTaskDefinition, FinalizeTaskDefinition, GetTaskRequest, GetTaskResponse, 
-    ProveReceiptType, ProveTaskDefinition, RollupType, SnarkTaskDefinition, Task, TaskStatus, 
-    TaskType, UpdateTaskStatusRequest, UpdateTaskStatusResponse, UploadArtifactRequest,
-    UploadArtifactResponse,
-};
+pub use client::BentoTaskClient;
