@@ -48,7 +48,7 @@ pub use workflow_common::{
 pub struct Args {
     /// agent stream type to monitor for tasks
     ///
-    /// ex: `cpu`, `prove`, `join`, `snark`, etc
+    /// ex: `exec`, `prove`, `join`, `snark`, etc
     #[arg(short, long)]
     pub task_stream: String,
 

@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use std::sync::Arc;
 use tracing_subscriber::filter::EnvFilter;
-use workflow::{Agent, Args};
+use workflow::{Agent, Args, EXEC_WORK_TYPE};
 use std::time::Duration;
 
 #[tokio::main]
@@ -27,9 +27,9 @@ async fn main() -> Result<()> {
         .await
         .context("Failed to run migrations")?;
 
-    tracing::info!("Successful agent startup! Original worker type: {task_stream}, but running as generalized agent capable of handling all task types");
+    tracing::info!("Successful agent startup! Original worker type: {task_stream}");
 
-    if enable_grpc {
+    if enable_grpc && task_stream == EXEC_WORK_TYPE{
         tracing::info!("Starting gRPC task polling to endpoint: {}", grpc_endpoint);
         
         tokio::select! {
