@@ -166,9 +166,10 @@ BEGIN
 END
 $$ LANGUAGE plpgsql;
 
--- Create a new task with an initialization job called 'init' and a definition,
--- max_retries is set for the 'init' task
+-- Add custom job_id support to create_job
+-- Update the create_job function to make job_id the first parameter
 CREATE OR REPLACE FUNCTION create_job(
+    job_id UUID,
     stream_id UUID,
     task_def jsonb,
     max_retries INTEGER,
@@ -178,9 +179,34 @@ CREATE OR REPLACE FUNCTION create_job(
 DECLARE
   new_id UUID;
 BEGIN
-  INSERT INTO jobs (state, user_id) VALUES ('running', user_id) RETURNING (id) INTO new_id;
+  -- Use the provided job_id if given, otherwise generate a new UUID
+  IF job_id IS NULL THEN
+    INSERT INTO jobs (state, user_id) VALUES ('running', user_id) RETURNING (id) INTO new_id;
+  ELSE
+    INSERT INTO jobs (id, state, user_id) VALUES (job_id, 'running', user_id) RETURNING (id) INTO new_id;
+  END IF;
+  
   INSERT INTO tasks (job_id, task_id, stream_id, task_def, prerequisites, max_retries, timeout_secs, state, waiting_on)
          VALUES (new_id, 'init', stream_id, task_def, '[]', max_retries, timeout_secs, 'ready', 0);
+  RETURN new_id;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Create a new task with an initialization job called 'init' and a definition,
+-- max_retries is set for the 'init' task
+-- backward compatibility wrapper with original parameter order
+CREATE OR REPLACE FUNCTION create_job_legacy(
+    stream_id UUID,
+    task_def jsonb,
+    max_retries INTEGER,
+    timeout_secs INTEGER,
+    user_id TEXT)
+  RETURNS UUID as $$
+DECLARE
+  new_id UUID;
+BEGIN
+  -- Call the new version with NULL job_id to generate a new UUID
+  SELECT create_job(NULL, stream_id, task_def, max_retries, timeout_secs, user_id) INTO new_id;
   RETURN new_id;
 END;
 $$ LANGUAGE plpgsql;

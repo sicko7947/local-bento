@@ -55,7 +55,7 @@ fn taskdb(c: &mut Criterion) {
             let start = Instant::now();
             for _i in 0..iters {
                 black_box(
-                    taskdb::create_job(&db, &stream_id, &task_def, 1, 1, user_id)
+                    taskdb::create_job_legacy(&db, &stream_id, &task_def, 1, 1, user_id)
                         .await
                         .unwrap(),
                 );
@@ -80,7 +80,7 @@ fn taskdb(c: &mut Criterion) {
                 .await
                 .unwrap();
             let task_def = Value::default();
-            let job_id = taskdb::create_job(&db, &stream_id, &task_def, 0, 1, user_id)
+            let job_id = taskdb::create_job_legacy(&db, &stream_id, &task_def, 0, 1, user_id)
                 .await
                 .unwrap();
 
@@ -120,7 +120,7 @@ fn taskdb(c: &mut Criterion) {
                 .await
                 .unwrap();
             let task_def = Value::default();
-            let job_id = taskdb::create_job(&db, &stream_id, &task_def, 0, 1, user_id)
+            let job_id = taskdb::create_job_legacy(&db, &stream_id, &task_def, 0, 1, user_id)
                 .await
                 .unwrap();
 
@@ -170,7 +170,7 @@ fn taskdb(c: &mut Criterion) {
                 .await
                 .unwrap();
             let task_def = Value::default();
-            let job_id = taskdb::create_job(&db, &stream_id, &task_def, 0, 1, user_id)
+            let job_id = taskdb::create_job_legacy(&db, &stream_id, &task_def, 0, 1, user_id)
                 .await
                 .unwrap();
 

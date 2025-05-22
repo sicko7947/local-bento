@@ -177,4 +177,14 @@ impl S3Client {
             Err(err) => Err(err.into()),
         }
     }
+
+    pub async fn delete_object(&self, key: &str) -> Result<()> {
+        self.client
+            .delete_object()
+            .bucket(&self.bucket)
+            .key(key)
+            .send()
+            .await?;
+        Ok(())
+    }
 }
