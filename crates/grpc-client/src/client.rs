@@ -1,13 +1,13 @@
 use anyhow::Result;
 use tonic::transport::{Channel, Endpoint};
-use tonic::{Request, Streaming}; // 仍然需要Streaming用于RequestTask
+use tonic::{Request, Streaming}; 
 
 use crate::bento::v1::{
     bento_service_client::BentoServiceClient, 
     RequestTaskRequest, 
     TaskAssignment, 
     UpdateTaskProgressRequest,
-    UpdateTaskProgressResponse, // 添加一元响应类型
+    UpdateTaskProgressResponse,
     UploadGroth16ResultRequest, 
     UploadGroth16ResultResponse, 
     UploadStarkResultRequest, 
@@ -15,8 +15,9 @@ use crate::bento::v1::{
 };
 
 /// Client for the Bento Task Service
+#[derive(Clone)]
 pub struct BentoClient {
-    client: BentoServiceClient<Channel>,
+    channel: Channel,
 }
 
 impl BentoClient {
@@ -30,36 +31,47 @@ impl BentoClient {
             endpoint_str
         };
         let channel = Endpoint::from_shared(endpoint_str)?
+            // Customize the channel with options if needed
+            // .buffer_size(sz)
+            // .concurrency_limit(limit)
+            // .http2_adaptive_window(enabled) 
             .connect()
             .await?;
-        let client = BentoServiceClient::new(channel);
-        Ok(Self { client })
+        Ok(Self { channel })
     }
 
     /// Requests a task from the server.
     /// The server returns a stream of task assignments.
     pub async fn request_task(
-        &mut self,
+        &self,
         request: RequestTaskRequest,
     ) -> Result<Streaming<TaskAssignment>> {
-        let response = self.client.request_task(Request::new(request)).await?;
+        let mut client = BentoServiceClient::new(self.channel.clone());
+        let response = client.request_task(Request::new(request)).await?;
         Ok(response.into_inner())
     }
 
     /// Sends a task progress update to the server.
     /// Returns the server's response with any instructions.
-    pub async fn update_task_progress( &mut self,request: UpdateTaskProgressRequest) -> Result<UpdateTaskProgressResponse> {
-        let response = self.client.update_task_progress(Request::new(request)).await?;
+    pub async fn update_task_progress(&self, request: UpdateTaskProgressRequest) -> Result<UpdateTaskProgressResponse> {
+        let mut client = BentoServiceClient::new(self.channel.clone());
+        let response = client.update_task_progress(Request::new(request)).await?;
         Ok(response.into_inner())
     }
 
-    pub async fn upload_groth16_result(&mut self, request: UploadGroth16ResultRequest) -> Result<UploadGroth16ResultResponse> {
-        let response = self.client.upload_groth16_result(Request::new(request)).await?;
+    /// Uploads the Groth16 result to the server.
+    /// Returns the server's response.
+    pub async fn upload_groth16_result(&self, request: UploadGroth16ResultRequest) -> Result<UploadGroth16ResultResponse> {
+        let mut client = BentoServiceClient::new(self.channel.clone());
+        let response = client.upload_groth16_result(Request::new(request)).await?;
         Ok(response.into_inner())
     }
     
-    pub async fn upload_stark_result(&mut self, request: UploadStarkResultRequest) -> Result<UploadStarkResultResponse> {
-        let response = self.client.upload_stark_result(Request::new(request)).await?;
+    /// Uploads the Stark result to the server.
+    /// Returns the server's response.
+    pub async fn upload_stark_result(&self, request: UploadStarkResultRequest) -> Result<UploadStarkResultResponse> {
+        let mut client = BentoServiceClient::new(self.channel.clone());
+        let response = client.upload_stark_result(Request::new(request)).await?;
         Ok(response.into_inner())
     }
 }

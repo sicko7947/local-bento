@@ -1,33 +1,25 @@
-// Copyright (c) 2025 RISC Zero, Inc.
-//
-// All rights reserved.
-
-#![deny(missing_docs)]
-
 //! Workflow processing Agent service
-
 use crate::redis::RedisPool;
 use anyhow::{Context, Result, bail};
 use clap::Parser;
-use futures::lock::Mutex;
 use grpc_client::bento::v1::{
     RequestTaskRequest,
     TaskAssignment,
     UpdateTaskProgressRequest,
     UploadGroth16ResultRequest,
-    UploadGroth16ResultResponse,
     UploadStarkResultRequest,
-    UploadStarkResultResponse,
 };
 use nvml_wrapper::Nvml;
 use risc0_zkvm::{get_prover_server, ProverOpts, ProverServer, VerifierContext};
 use sqlx::postgres::{PgPool, PgPoolOptions};
+use uuid::Uuid;
 use std::{
     rc::Rc, sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
     }
 };
+use workflow_common::s3::{RECEIPT_BUCKET_DIR, STARK_BUCKET_DIR, GROTH16_BUCKET_DIR};
 use taskdb::ReadyTask;
 use tokio::time;
 use workflow_common::{TaskType, COPROC_WORK_TYPE};
@@ -182,7 +174,7 @@ pub struct Agent {
     /// risc0 verifier context
     verifier_ctx: VerifierContext,
     /// gRPC client for task updates
-    grpc_client: Option<Arc<Mutex<grpc_client::BentoClient>>>,
+    grpc_client: Option<grpc_client::BentoClient>,
     /// GPU memory limit in MB
     gpu_memory: u64,
 }
@@ -229,8 +221,7 @@ impl Agent {
         };
 
         let grpc_client = if args.enable_grpc {
-            let client = grpc_client::BentoClient::new(args.grpc_endpoint.clone()).await?;
-            Some(Arc::new(Mutex::new(client)))
+            Some(grpc_client::BentoClient::new(args.grpc_endpoint.clone()).await?)
         } else {
             None
         };
@@ -377,6 +368,7 @@ impl Agent {
         taskdb::update_task_done(&self.db_pool, &task.job_id, &task.task_id, res.clone())
             .await
             .context("Failed to report task done")?;
+
         self.update_grpc_task_status_if_exists(&task.job_id, &task.task_id, &task_type, &res).await?;
 
         Ok(())
@@ -417,8 +409,7 @@ impl Agent {
 
         while !term_sig.load(Ordering::Relaxed) {
 
-            if let Some(grpc_client_arc) = &self.grpc_client {
-                let mut client = grpc_client_arc.lock().await;
+            if let Some(client) = &self.grpc_client {
                 match client.request_task(request.clone()).await {
                     Ok(mut stream) => {
 
@@ -455,8 +446,7 @@ impl Agent {
     async fn process_grpc_task(&self, task: &TaskAssignment) -> Result<()> {
         tracing::info!("Received gRPC task: {}", task.task_id);
 
-        if let Some(grpc_client_arc) = &self.grpc_client {
-            let mut client = grpc_client_arc.lock().await;
+        if let Some(client) = &self.grpc_client {
             let update_request = UpdateTaskProgressRequest {
                 task_id: task.task_id.clone(),
                 status: grpc_client::bento::v1::TaskStatus::Pending as i32,
@@ -606,7 +596,6 @@ impl Agent {
         uuid::Uuid,
     )> {
         let user_id = "grpc";
-        let worker_type = AUX_WORK_TYPE;
 
         let aux_stream = match taskdb::get_stream(&self.db_pool, user_id, AUX_WORK_TYPE).await? {
             Some(id) => id,
@@ -655,144 +644,113 @@ impl Agent {
         ))
     }
 
-    // async fn upload_task_result(&self, grpc_task_id: &str, job_id: &Uuid) -> Result<()> {
-    //     use grpc_client::bento::v1::{UploadGroth16ResultRequest, UploadStarkResultRequest};
+    async fn upload_task_result(&self, job_id: &Uuid, task_type: &TaskType) -> Result<()> {
+        tracing::info!("Uploading results for gRPC task: {}", job_id);
 
-    //     tracing::info!("Uploading results for gRPC task: {}", grpc_task_id);
+        let bucket_dir = match task_type {
+            TaskType::Snark(_) => GROTH16_BUCKET_DIR,
+            _ => STARK_BUCKET_DIR,
+        };
+        
+        let receipt_key = format!("{RECEIPT_BUCKET_DIR}/{bucket_dir}/{job_id}.bincode");
+        if !&self
+            .s3_client
+            .object_exists(&receipt_key)
+            .await
+            .context("Failed to check if object exists")?
+        {
+            tracing::error!("Receipt missing for job_id: {} in {} bucket", job_id, bucket_dir);
+            return Err(anyhow::anyhow!("Receipt missing for job_id: {} in {} bucket", job_id, bucket_dir));
+        }
 
-    //     let tasks = taskdb::get_job_tasks(&self.db_pool, job_id).await?;
+        let receipt = &self
+            .s3_client
+            .read_buf_from_s3(&receipt_key)
+            .await
+            .context("Failed to read from object store")?;
 
-    //     for task in tasks {
-    //         if task.state != taskdb::TaskState::Done {
-    //             continue;
-    //         }
+        match task_type {
+            TaskType::Snark(_) => {
+                let request = UploadGroth16ResultRequest {
+                    task_id: job_id.to_string(),
+                    proof_data: receipt.clone(),
+                    description: "Groth16 proof from SNARK task".to_string(),
+                };
 
-    //         // 寻找可能的STARK任务或GROTH16任务
-    //         let task_type: Option<TaskType> = serde_json::from_value(task.task_def.clone()).ok();
+                if let Some(client) = &self.grpc_client {
+                    match client.upload_groth16_result(request).await {
+                        Ok(response) => {
+                            if response.success {
+                                tracing::info!(
+                                    "Successfully uploaded Groth16 proof for task: {}",
+                                    job_id
+                                );
+                            } else {
+                                tracing::error!(
+                                    "Server rejected Groth16 upload: {}",
+                                    response.error_message
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to upload Groth16 proof: {}", e);
+                        }
+                    }
+                }
+            }
+            _ => {
+                // 对于非Snark任务，我们需要反序列化receipt并提取journal
+                let receipt_obj: risc0_zkvm::Receipt = bincode::deserialize(receipt)
+                    .context("Failed to deserialize receipt with bincode")?;
+                let journal: risc0_zkvm::Journal = receipt_obj.journal.clone();
+                let journal_data = bincode::serialize(&journal)
+                    .context("Failed to serialize journal data")?;
+                
+                let request = UploadStarkResultRequest {
+                    task_id: job_id.to_string(),
+                    receipt_data: receipt.clone(),
+                    journal_data,
+                    description: "STARK receipt from Executor task".to_string(),
+                };
 
-    //         if let Some(task_type) = task_type {
-    //             match task_type {
-    //                 TaskType::Executor(_) => {
-    //                     // 查找receipt
-    //                     let receipt_path = format!("job:{}:{}", job_id, RECEIPT_PATH);
-    //                     let mut conn = self.redis_pool.get().await?;
+                if let Some(client) = &self.grpc_client {
+                    match client.upload_stark_result(request).await {
+                        Ok(response) => {
+                            if response.success {
+                                tracing::info!(
+                                    "Successfully uploaded STARK receipt for task: {}",
+                                    job_id
+                                );
+                            } else {
+                                tracing::error!(
+                                    "Server rejected STARK upload: {}",
+                                    response.error_message
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to upload STARK receipt: {}", e);
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
 
-    //                     if let Ok(receipt_bytes) = conn.get::<_, Vec<u8>>(&receipt_path).await {
-    //                         // 上传STARK结果 - 使用一元调用
-    //                         let request = UploadStarkResultRequest {
-    //                             task_id: grpc_task_id.to_string(),
-    //                             receipt_data: receipt_bytes,
-    //                             journal_data: vec![], // 可以添加日志数据如果需要
-    //                             description: "STARK receipt from Executor task".to_string(),
-    //                         };
-
-    //                         if let Some(grpc_client_arc) = &self.grpc_client {
-    //                             let client = grpc_client_arc.lock().await;
-    //                             match &self.grpc_client.upload_stark_result(request).await {
-    //                                 Ok(response) => {
-    //                                     if response.success {
-    //                                         tracing::info!(
-    //                                             "Successfully uploaded STARK receipt for task: {}",
-    //                                             grpc_task_id
-    //                                         );
-    //                                     } else {
-    //                                         tracing::error!(
-    //                                             "Server rejected STARK upload: {}",
-    //                                             response.error_message
-    //                                         );
-    //                                     }
-    //                                 }
-    //                                 Err(e) => {
-    //                                     tracing::error!("Failed to upload STARK receipt: {}", e);
-    //                                 }
-    //                             }
-    //                         }
-    //                     }
-    //                 }
-    //                 TaskType::Snark(_) => {
-    //                     // 获取Groth16证明数据
-    //                     if let Some(output) = task.output {
-    //                         if let Ok(snark_resp) =
-    //                             serde_json::from_value::<workflow_common::SnarkResp>(output)
-    //                         {
-    //                             // 尝试从S3获取数据
-    //                             let snark_key = format!(
-    //                                 "{}/{}",
-    //                                 workflow_common::s3::GROTH16_BUCKET_DIR,
-    //                                 snark_resp.snark
-    //                             );
-
-    //                             match self.s3_client.get_object(&snark_key).await {
-    //                                 Ok(proof_bytes) => {
-    //                                     // 上传Groth16结果 - 使用一元调用
-    //                                     let request = UploadGroth16ResultRequest {
-    //                                         task_id: grpc_task_id.to_string(),
-    //                                         proof_data: proof_bytes,
-    //                                         description: "Groth16 proof from SNARK task"
-    //                                             .to_string(),
-    //                                     };
-
-    //                                     if let Some(grpc_client_arc) = &self.grpc_client {
-    //                                         let client = grpc_client_arc.lock().await;
-    //                                         match &client
-    //                                             .upload_groth16_result(request)
-    //                                             .await
-    //                                         {
-    //                                             Ok(response) => {
-    //                                                 if response.success {
-    //                                                     tracing::info!(
-    //                                                         "Successfully uploaded Groth16 proof for task: {}",
-    //                                                         grpc_task_id
-    //                                                     );
-    //                                                 } else {
-    //                                                     tracing::error!(
-    //                                                         "Server rejected Groth16 upload: {}",
-    //                                                         response.error_message
-    //                                                     );
-    //                                                 }
-    //                                             }
-    //                                             Err(e) => {
-    //                                                 tracing::error!(
-    //                                                     "Failed to upload Groth16 proof: {}",
-    //                                                     e
-    //                                                 );
-    //                                             }
-    //                                         }
-    //                                     }
-    //                                 }
-    //                                 Err(e) => {
-    //                                     tracing::error!(
-    //                                         "Failed to get Groth16 proof from S3: {}",
-    //                                         e
-    //                                     );
-    //                                 }
-    //                             }
-    //                         }
-    //                     }
-    //                 }
-    //                 _ => {}
-    //             }
-    //         }
-    //     }
-
-    //     Ok(())
-    // }
-
-    /// 检查任务是否关联了gRPC任务，如果是则更新其状态
     async fn update_grpc_task_status_if_exists(&self, job_id: &uuid::Uuid, task_id: &String, task_type: &TaskType, res: &serde_json::Value) -> Result<()> {
-        // 如果gRPC客户端没有初始化，直接返回
         if self.grpc_client.is_none() {
             return Ok(());
         }
 
-        // 从当前任务结果中提取cycles和segments信息
+        let mut message: String = String::new();
         let mut status: i32 = 0;
         let mut total_segments: Option<u64> = None;
         let mut total_cycles: Option<u64> = None;
 
-        // 根据任务类型和结果提取指标
         match task_type {
             TaskType::Executor(_) => {
+                message = format!("Task is executing");
                 status = grpc_client::bento::v1::TaskStatus::GeneratingProof as i32;
                 if let Ok(exec_resp) = serde_json::from_value::<workflow_common::ExecutorResp>(res.clone()){
                     total_cycles = Some(exec_resp.total_cycles);
@@ -801,30 +759,34 @@ impl Agent {
             }
             TaskType::Finalize(_) => {
                 status = grpc_client::bento::v1::TaskStatus::Completed as i32;
+                message = format!("Task is Completed");
             }
             TaskType::Snark(_) => {
                 status = grpc_client::bento::v1::TaskStatus::Completed as i32;
+                message = format!("Task is Completed");
             }
             _ => {
                 status = grpc_client::bento::v1::TaskStatus::GeneratingProof as i32;
+                message = format!("Task is generating proof");
             }
         }
 
 
-        // 创建状态更新请求，包含从当前任务中提取的cycles和segments信息
         let update_request = grpc_client::bento::v1::UpdateTaskProgressRequest {
             task_id: job_id.to_string(),
             status,
-            message: format!("Task completed: {:?}", task_type),
+            message,
             total_segments,
             total_cycles,
         };
 
-        // 获取gRPC客户端并发送更新
-        if let Some(grpc_client_arc) = &self.grpc_client {
-            let mut client = grpc_client_arc.lock().await;
+        if let Some(client) = &self.grpc_client {
             client.update_task_progress(update_request).await?;
-        };
+        }
+
+        if status == grpc_client::bento::v1::TaskStatus::Completed as i32 {
+            self.upload_task_result(job_id, task_type).await?;
+        }
 
         Ok(())
     }
