@@ -13,14 +13,6 @@ pub fn create_pool(redis_url: &str) -> Result<RedisPool> {
         .context("Failed to init redis pool")
 }
 
-/// Function to get a key 
-pub async fn get_key<T>(conn: &mut Connection, key: &str) -> RedisResult<T>
-where
-    T: redis::FromRedisValue,
-{
-    conn.get(key).await
-}
-
 /// Function to set a key with an optional expiry using a pipeline
 pub async fn set_key_with_expiry<T>(
     conn: &mut deadpool_redis::Connection,

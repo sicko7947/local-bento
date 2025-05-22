@@ -3,7 +3,6 @@ use clap::Parser;
 use std::sync::Arc;
 use tracing_subscriber::filter::EnvFilter;
 use workflow::{Agent, Args, EXEC_WORK_TYPE};
-use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> Result<()> {

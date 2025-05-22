@@ -1,7 +1,6 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/api",
     "crates/taskdb",
     "crates/grpc-client",
     "crates/workflow",
