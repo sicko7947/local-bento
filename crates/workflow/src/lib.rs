@@ -154,6 +154,10 @@ pub struct Args {
     /// Enable polling for gRPC tasks
     #[clap(long, default_value_t = false)]
     pub enable_grpc: bool,
+
+    /// Polling interval between gRPC tasks
+    #[arg(short, long, default_value_t = 1)]
+    pub grpc_poll_time: u64,
 }
 
 /// Core agent context to hold all optional clients / pools and state
@@ -429,12 +433,12 @@ impl Agent {
                     }
                     Err(err) => {
                         tracing::error!("Failed to request task from gRPC server: {}", err);
-                        time::sleep(time::Duration::from_secs(self.args.poll_time)).await;
+                        time::sleep(time::Duration::from_secs(self.args.grpc_poll_time)).await;
                     }
                 }
             }
 
-            time::sleep(time::Duration::from_secs(self.args.poll_time)).await;
+            time::sleep(time::Duration::from_secs(self.args.grpc_poll_time)).await;
         }
 
         tracing::warn!("gRPC task polling terminated due to signal");
@@ -565,9 +569,14 @@ impl Agent {
 
         let task_def = serde_json::to_value(workflow_common::TaskType::Executor(req))
             .context("Failed to serialize ExecutorReq")?;
-
-        let job_id: Uuid = taskdb::create_job(
+            
+        // Parse task_id to UUID to use as job_id
+        let job_id = Uuid::parse_str(&task.task_id)
+            .with_context(|| format!("Failed to parse task_id as UUID: {}", task.task_id))?;
+            
+        taskdb::create_job(
             &self.db_pool,
+            &job_id,
             &exec_stream,
             &task_def,
             self.args.exec_retries,
@@ -576,16 +585,7 @@ impl Agent {
         )
         .await
         .context("Failed to create prove task for gRPC request")?;
-
-        let mut conn: deadpool_redis::Connection = self.redis_pool.get().await?;
-        redis::set_key_with_expiry(
-            &mut conn,
-            &task.task_id,
-            job_id.to_string(),
-            Some(self.args.redis_ttl),
-        )
-        .await?;
-
+        
         Ok(())
     }
 
@@ -594,17 +594,13 @@ impl Agent {
         task: &grpc_client::bento::v1::TaskAssignment,
         details: &grpc_client::bento::v1::Groth16TaskDetails,
     ) -> Result<()> {
-        let receipt_id = if !details.stark_receipt_data.is_empty() {
-            // For Groth16, the receipt is specific to this SNARK task, derived from a previous STARK task.
-            // It's stored in a subfolder of RECEIPT_BUCKET_DIR/STARK_BUCKET_DIR, identified by the current snark task_id.
-            // This distinguishes it from the original STARK receipt which might be at RECEIPT_BUCKET_DIR/STARK_BUCKET_DIR/{original_stark_job_id}.bincode
-            let mut conn: deadpool_redis::Connection = self.redis_pool.get().await?;
-            let job_id = redis::get_key::<String>(
-                &mut conn,
-                &task.task_id,
-            ).await?;
+        tracing::info!("Processing Groth16 task: {}", task.task_id);
+        
+        let job_id = Uuid::parse_str(&task.task_id)
+            .with_context(|| format!("Failed to parse task_id as UUID: {}", task.task_id))?;
 
-            let key = format!("{RECEIPT_BUCKET_DIR}/{STARK_BUCKET_DIR}/{}.bincode", job_id);
+        let receipt_id = if !details.stark_receipt_data.is_empty() {
+            let key = format!("{RECEIPT_BUCKET_DIR}/{STARK_BUCKET_DIR}/{}.bincode", task.task_id);
             if self
                 .s3_client
                 .object_exists(&key)
@@ -620,15 +616,15 @@ impl Agent {
                     .write_buf_to_s3(&key, details.stark_receipt_data.clone())
                     .await
                     .with_context(|| {
-                        format!(
-                            "Failed to upload Stark receipt data to S3 for Groth16 task {}",
-                            task.task_id
-                        )
-                    })?;
+                    format!(
+                        "Failed to upload Stark receipt data to S3 for Groth16 task {}",
+                        task.task_id
+                    )
+                })?;
             }
-            job_id
+            task.task_id.clone()
         } else {
-            details.stark_original_task_id.clone()
+            task.task_id.clone()
         };
 
         let (
@@ -641,15 +637,16 @@ impl Agent {
         ) = self.get_or_create_streams_for_grpc().await?;
 
         let req = workflow_common::SnarkReq {
-            receipt: receipt_id, // Use the determined S3 key
+            receipt: receipt_id, // Use the task_id directly as the receipt_id
             compress_type: workflow_common::CompressType::Groth16,
         };
 
         let task_def = serde_json::to_value(workflow_common::TaskType::Snark(req))
             .context("Failed to serialize SnarkReq")?;
 
-        let job_id: Uuid = taskdb::create_job(
+        taskdb::create_job(
             &self.db_pool,
+            &job_id,
             &snark_stream,
             &task_def,
             self.args.snark_retries,
@@ -658,16 +655,7 @@ impl Agent {
         )
         .await
         .context("Failed to create snark task for gRPC request")?;
-
-        let mut conn = self.redis_pool.get().await?;
-        redis::set_key_with_expiry(
-            &mut conn,
-            &task.task_id,
-            job_id.to_string(),
-            Some(self.args.redis_ttl),
-        )
-        .await?;
-
+        
         Ok(())
     }
 

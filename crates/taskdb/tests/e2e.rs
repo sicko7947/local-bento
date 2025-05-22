@@ -46,7 +46,7 @@ async fn e2e(pool: PgPool) -> Result<()> {
 
     // Create a new workflow for a given customer
     let task_def = serde_json::json!({"image_id": image_id, "input_id": input_id});
-    taskdb::create_job(&pool, &aux_stream, &task_def, 0, 100, user_id)
+    taskdb::create_job_legacy(&pool, &aux_stream, &task_def, 0, 100, user_id)
         .await
         .unwrap();
 

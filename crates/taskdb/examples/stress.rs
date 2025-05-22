@@ -65,7 +65,7 @@ async fn spawner(shutdown: Arc<AtomicBool>, pool: PgPool, args: Args) -> Result<
             "segments": segment_count,
             "user_id": user_id,
         });
-        let job_id = taskdb::create_job(&pool, cpu_stream, &task_def, 0, 100, user_id)
+        let job_id = taskdb::create_job_legacy(&pool, cpu_stream, &task_def, 0, 100, user_id)
             .await
             .context("Failed to create job")?;
         tracing::info!("Spawning new job: {job_id} segments; {segment_count}");

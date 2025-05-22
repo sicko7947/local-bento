@@ -133,6 +133,7 @@ pub async fn create_stream(
 
 pub async fn create_job(
     pool: &PgPool,
+    job_id: &Uuid,
     stream_id: &Uuid,
     task_def: &JsonValue,
     max_retries: i32,
@@ -140,7 +141,8 @@ pub async fn create_job(
     user_id: &str,
 ) -> Result<Uuid, TaskDbErr> {
     sqlx::query!(
-        "SELECT create_job($1, $2, $3, $4, $5) as id",
+        "SELECT create_job($1, $2, $3, $4, $5, $6) as id",
+        job_id,
         stream_id,
         task_def,
         max_retries,
@@ -152,6 +154,30 @@ pub async fn create_job(
     .id
     .ok_or(TaskDbErr::InternalErr(
         "create_job result missing id field".into(),
+    ))
+}
+
+pub async fn create_job_legacy(
+    pool: &PgPool,
+    stream_id: &Uuid,
+    task_def: &JsonValue,
+    max_retries: i32,
+    timeout_secs: i32,
+    user_id: &str,
+) -> Result<Uuid, TaskDbErr> {
+    sqlx::query!(
+        "SELECT create_job_legacy($1, $2, $3, $4, $5) as id",
+        stream_id,
+        task_def,
+        max_retries,
+        timeout_secs,
+        user_id,
+    )
+    .fetch_one(pool)
+    .await?
+    .id
+    .ok_or(TaskDbErr::InternalErr(
+        "create_job_legacy result missing id field".into(),
     ))
 }
 
@@ -594,7 +620,7 @@ mod tests {
         let user_id = "user1";
         let task_def = serde_json::json!({"member": "data"});
         let stream_id = create_stream(&pool, "CPU", 1, 1.0, user_id).await.unwrap();
-        let job_id = create_job(&pool, &stream_id, &task_def, 0, 100, user_id)
+        let job_id = create_job_legacy(&pool, &stream_id, &task_def, 0, 100, user_id)
             .await
             .unwrap();
 
@@ -612,7 +638,7 @@ mod tests {
     async fn create_job_invalid(pool: PgPool) -> sqlx::Result<()> {
         let task_def = serde_json::json!({"member": "data"});
         let stream_id = Uuid::parse_str("a1a2a3a4b1b2c1c2d1d2d3d4d5d6d7d8").unwrap();
-        let res = create_job(&pool, &stream_id, &task_def, 0, 100, "user1").await;
+        let res = create_job_legacy(&pool, &stream_id, &task_def, 0, 100, "user1").await;
 
         assert!(res.is_err());
         let err = res.err().unwrap();
@@ -627,7 +653,7 @@ mod tests {
         let stream_id = create_stream(&pool, "CPU", 1, 1.0, user_id).await.unwrap();
         let task_def = serde_json::json!({"init": "test"});
         let init_timeout = 100;
-        let job_id = create_job(&pool, &stream_id, &task_def, 0, init_timeout, user_id)
+        let job_id = create_job_legacy(&pool, &stream_id, &task_def, 0, init_timeout, user_id)
             .await
             .unwrap();
 
@@ -685,7 +711,7 @@ mod tests {
             .await
             .unwrap();
         let task_def = serde_json::json!({"init": "test"});
-        let _job_id = create_job(&pool, &stream_id, &task_def, 0, 100, user_id)
+        let _job_id = create_job_legacy(&pool, &stream_id, &task_def, 0, 100, user_id)
             .await
             .unwrap();
 
@@ -710,7 +736,7 @@ mod tests {
             .await
             .unwrap();
         let task_def = serde_json::json!({"init": "test"});
-        let job_id = create_job(&pool, &stream_id, &task_def, 0, 100, user_id)
+        let job_id = create_job_legacy(&pool, &stream_id, &task_def, 0, 100, user_id)
             .await
             .unwrap();
 
@@ -763,7 +789,7 @@ mod tests {
         let task_def = serde_json::json!({"init": "test"});
 
         let retry_max = 1;
-        let _job_id = create_job(&pool, &stream_id, &task_def, retry_max, 100, user_id)
+        let _job_id = create_job_legacy(&pool, &stream_id, &task_def, retry_max, 100, user_id)
             .await
             .unwrap();
         let task = request_work(&pool, worker_type).await.unwrap().unwrap();
@@ -820,7 +846,7 @@ mod tests {
             .await
             .unwrap();
         let task_def = serde_json::json!({"init": "test"});
-        let _job_id = create_job(&pool, &stream_id, &task_def, 0, 100, user_id)
+        let _job_id = create_job_legacy(&pool, &stream_id, &task_def, 0, 100, user_id)
             .await
             .unwrap();
         let task = request_work(&pool, worker_type).await.unwrap().unwrap();
@@ -859,7 +885,7 @@ mod tests {
             .await
             .unwrap();
         let task_def = serde_json::json!({"init": "test"});
-        let job_id = create_job(&pool, &stream_id, &task_def, 0, 100, user_id)
+        let job_id = create_job_legacy(&pool, &stream_id, &task_def, 0, 100, user_id)
             .await
             .unwrap();
 
@@ -932,7 +958,7 @@ mod tests {
         let task_def = serde_json::json!({"init": "test"});
 
         // Start and grab init task
-        let job_id = create_job(&pool, &stream_id, &task_def, 0, 100, user_id)
+        let job_id = create_job_legacy(&pool, &stream_id, &task_def, 0, 100, user_id)
             .await
             .unwrap();
         let init = request_work(&pool, worker_type).await.unwrap().unwrap();
@@ -1025,7 +1051,7 @@ mod tests {
         let task_def = serde_json::json!({"init": "test"});
 
         // Start and grab init task
-        let job_id = create_job(&pool, &stream_id, &task_def, 0, 100, user_id)
+        let job_id = create_job_legacy(&pool, &stream_id, &task_def, 0, 100, user_id)
             .await
             .unwrap();
 
@@ -1038,7 +1064,7 @@ mod tests {
         .unwrap();
 
         let task_def = serde_json::json!({"init": "test"});
-        let job_id = create_job(&pool, &stream_id, &task_def, 0, 100, user_id)
+        let job_id = create_job_legacy(&pool, &stream_id, &task_def, 0, 100, user_id)
             .await
             .unwrap();
 
@@ -1070,14 +1096,14 @@ mod tests {
         let stream_id_0 = create_stream(&pool, worker_type, 0, 1.0, user_id)
             .await
             .unwrap();
-        let job_id_0 = create_job(&pool, &stream_id_0, &JsonValue::default(), 0, 100, user_id)
+        let job_id_0 = create_job_legacy(&pool, &stream_id_0, &JsonValue::default(), 0, 100, user_id)
             .await
             .unwrap();
 
         let stream_id_1 = create_stream(&pool, worker_type, 1, 1.0, user_id)
             .await
             .unwrap();
-        let job_id_1 = create_job(&pool, &stream_id_1, &JsonValue::default(), 0, 100, user_id)
+        let job_id_1 = create_job_legacy(&pool, &stream_id_1, &JsonValue::default(), 0, 100, user_id)
             .await
             .unwrap();
 
@@ -1097,7 +1123,7 @@ mod tests {
         let stream_id_0 = create_stream(&pool, worker_type, 0, 1.0, user_id)
             .await
             .unwrap();
-        let job_id_0 = create_job(&pool, &stream_id_0, &JsonValue::default(), 0, 100, user_id)
+        let job_id_0 = create_job_legacy(&pool, &stream_id_0, &JsonValue::default(), 0, 100, user_id)
             .await
             .unwrap();
 
@@ -1121,7 +1147,7 @@ mod tests {
         let stream_id_1 = create_stream(&pool, worker_type, 0, 1.1, user_id)
             .await
             .unwrap();
-        let job_id_1 = create_job(&pool, &stream_id_1, &JsonValue::default(), 0, 100, user_id)
+        let job_id_1 = create_job_legacy(&pool, &stream_id_1, &JsonValue::default(), 0, 100, user_id)
             .await
             .unwrap();
         create_task(
@@ -1155,7 +1181,7 @@ mod tests {
         let stream_id_0 = create_stream(&pool, worker_type, 0, 1.0, user_id)
             .await
             .unwrap();
-        let job_id_0 = create_job(&pool, &stream_id_0, &JsonValue::default(), 0, 100, user_id)
+        let job_id_0 = create_job_legacy(&pool, &stream_id_0, &JsonValue::default(), 0, 100, user_id)
             .await
             .unwrap();
 
@@ -1164,7 +1190,7 @@ mod tests {
         let stream_id_2 = create_stream(&pool, worker_type, 2, 1.0, user_id)
             .await
             .unwrap();
-        let job_id_2 = create_job(&pool, &stream_id_2, &JsonValue::default(), 0, 100, user_id)
+        let job_id_2 = create_job_legacy(&pool, &stream_id_2, &JsonValue::default(), 0, 100, user_id)
             .await
             .unwrap();
 
@@ -1233,7 +1259,7 @@ mod tests {
             .await
             .unwrap();
         let task_def = serde_json::json!({"init": "test"});
-        let job_id = create_job(&pool, &stream_id, &task_def, 0, 100, user_id)
+        let job_id = create_job_legacy(&pool, &stream_id, &task_def, 0, 100, user_id)
             .await
             .unwrap();
 
@@ -1288,7 +1314,7 @@ mod tests {
             .unwrap();
         let task_def = serde_json::json!({"init": "test"});
         let init_timeout = 1;
-        let job_id = create_job(&pool, &stream_id, &task_def, 1, init_timeout, user_id)
+        let job_id = create_job_legacy(&pool, &stream_id, &task_def, 1, init_timeout, user_id)
             .await
             .unwrap();
 
@@ -1321,7 +1347,7 @@ mod tests {
             .unwrap();
         let task_def = serde_json::json!({"init": "test"});
         let init_timeout = 1;
-        let job_id = create_job(&pool, &stream_id, &task_def, 1, init_timeout, user_id)
+        let job_id = create_job_legacy(&pool, &stream_id, &task_def, 1, init_timeout, user_id)
             .await
             .unwrap();
 
@@ -1340,20 +1366,20 @@ mod tests {
             .unwrap();
         let task_def = serde_json::json!({"init": "test"});
         let init_timeout = 1;
-        create_job(&pool, &stream_id, &task_def, 1, init_timeout, user_id)
+        create_job_legacy(&pool, &stream_id, &task_def, 1, init_timeout, user_id)
             .await
             .unwrap();
 
         let job_count = get_concurrent_jobs(&pool, user_id).await.unwrap();
         assert_eq!(job_count, 1);
 
-        create_job(&pool, &stream_id, &task_def, 1, init_timeout, "user2")
+        create_job_legacy(&pool, &stream_id, &task_def, 1, init_timeout, "user2")
             .await
             .unwrap();
         let job_count = get_concurrent_jobs(&pool, user_id).await.unwrap();
         assert_eq!(job_count, 1);
 
-        create_job(&pool, &stream_id, &task_def, 1, init_timeout, user_id)
+        create_job_legacy(&pool, &stream_id, &task_def, 1, init_timeout, user_id)
             .await
             .unwrap();
         let job_count = get_concurrent_jobs(&pool, user_id).await.unwrap();
@@ -1401,7 +1427,7 @@ mod tests {
             .unwrap();
         let task_def = serde_json::json!({"init": "test"});
         let init_timeout = 1;
-        let job_id = create_job(&pool, &stream_id, &task_def, 1, init_timeout, user_id)
+        let job_id = create_job_legacy(&pool, &stream_id, &task_def, 1, init_timeout, user_id)
             .await
             .unwrap();
 
@@ -1428,7 +1454,7 @@ mod tests {
             .unwrap();
         let task_def = serde_json::json!({"init": "test"});
         let init_timeout = 1;
-        let job_id = create_job(&pool, &stream_id, &task_def, 1, init_timeout, user_id)
+        let job_id = create_job_legacy(&pool, &stream_id, &task_def, 1, init_timeout, user_id)
             .await
             .unwrap();
 
@@ -1440,7 +1466,7 @@ mod tests {
         let error = get_job_failure(&pool, &job_id).await.unwrap();
         assert_eq!(error, test_err);
 
-        let job_id = create_job(&pool, &stream_id, &task_def, 1, init_timeout, user_id)
+        let job_id = create_job_legacy(&pool, &stream_id, &task_def, 1, init_timeout, user_id)
             .await
             .unwrap();
 
@@ -1462,7 +1488,7 @@ mod tests {
             .unwrap();
         let task_def = serde_json::json!({"init": "test"});
         let init_timeout = 1;
-        let job_id = create_job(&pool, &stream_id, &task_def, 1, init_timeout, user_id)
+        let job_id = create_job_legacy(&pool, &stream_id, &task_def, 1, init_timeout, user_id)
             .await
             .unwrap();
 
@@ -1483,7 +1509,7 @@ mod tests {
 #[sqlx::test()]
 async fn delete_job_test(pool: PgPool) -> sqlx::Result<()> {
     let stream_id = create_stream(&pool, "CPU", 1, 1.0, "user1").await.unwrap();
-    let job_id = create_job(
+    let job_id = create_job_legacy(
         &pool,
         &stream_id,
         &serde_json::json!({"init": "test"}),
