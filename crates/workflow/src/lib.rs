@@ -1,27 +1,27 @@
 //! Workflow processing Agent service
 use crate::redis::RedisPool;
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use clap::Parser;
 use grpc_client::bento::v1::{
-    RequestTaskRequest,
-    TaskAssignment,
-    UpdateTaskProgressRequest,
-    UploadGroth16ResultRequest,
-    UploadStarkResultRequest,
+    RequestTaskRequest, StarkTaskDetails, TaskAssignment, UpdateTaskProgressRequest,
+    UploadGroth16ResultRequest, UploadStarkResultRequest,
 };
 use nvml_wrapper::Nvml;
-use risc0_zkvm::{get_prover_server, ProverOpts, ProverServer, VerifierContext};
+use risc0_zkvm::{compute_image_id, get_prover_server, ProverOpts, ProverServer, VerifierContext};
 use sqlx::postgres::{PgPool, PgPoolOptions};
-use uuid::Uuid;
 use std::{
-    rc::Rc, sync::{
+    rc::Rc,
+    sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
-    }
+    },
 };
-use workflow_common::s3::{RECEIPT_BUCKET_DIR, STARK_BUCKET_DIR, GROTH16_BUCKET_DIR};
 use taskdb::ReadyTask;
 use tokio::time;
+use uuid::Uuid;
+use workflow_common::s3::{
+    ELF_BUCKET_DIR, GROTH16_BUCKET_DIR, INPUT_BUCKET_DIR, RECEIPT_BUCKET_DIR, STARK_BUCKET_DIR,
+};
 use workflow_common::{TaskType, COPROC_WORK_TYPE};
 
 mod redis;
@@ -97,7 +97,6 @@ pub struct Args {
     monitor_requeue: bool,
 
     // Task flags
-
     /// How many times a task be running for, before it is marked as timed-out
     #[clap(long, default_value_t = 0)]
     exec_retries: i32,
@@ -189,7 +188,8 @@ impl Agent {
             let device = nvml.device_by_index(0)?;
             let info = device.memory_info()?;
             Ok::<_, nvml_wrapper::error::NvmlError>(info.total / 1024 / 1024) // Convert to MB
-        })().unwrap_or_else(|err| {
+        })()
+        .unwrap_or_else(|err| {
             tracing::warn!("Failed to get GPU memory info: {}, defaulting to 0", err);
             0
         });
@@ -369,7 +369,8 @@ impl Agent {
             .await
             .context("Failed to report task done")?;
 
-        self.update_grpc_task_status_if_exists(&task.job_id, &task.task_id, &task_type, &res).await?;
+        self.update_grpc_task_status_if_exists(&task.job_id, &task_type, &res)
+            .await?;
 
         Ok(())
     }
@@ -400,7 +401,6 @@ impl Agent {
         let term_sig =
             Self::create_sig_monitor().context("Failed to create signal hook for gRPC client")?;
 
-
         let request = RequestTaskRequest {
             gpu_memory: self.gpu_memory,
         };
@@ -408,11 +408,9 @@ impl Agent {
         tracing::info!("Starting gRPC task polling");
 
         while !term_sig.load(Ordering::Relaxed) {
-
             if let Some(client) = &self.grpc_client {
                 match client.request_task(request.clone()).await {
                     Ok(mut stream) => {
-
                         while let Some(task_assignment) =
                             stream.message().await.context("Failed to receive task")?
                         {
@@ -470,13 +468,74 @@ impl Agent {
         }
     }
 
-    async fn process_stark_task(
-        &self,
-        task: &grpc_client::bento::v1::TaskAssignment,
-        details: &grpc_client::bento::v1::StarkTaskDetails,
-    ) -> Result<()> {
-        let image_id = &details.image_id;
-        let elf_data = &details.elf_data;
+    async fn process_stark_task(&self, task: &TaskAssignment, details: &StarkTaskDetails) -> Result<()> {
+
+        let image_id = if !details.elf_data.is_empty() {
+            // Compute image_id from ELF data and check if it matches details.image_id
+            let computed_image_id = compute_image_id(&details.elf_data)
+                .context("Failed to compute image id from ELF data")?
+                .to_string();
+            if computed_image_id != details.image_id {
+                return Err(anyhow::anyhow!(
+                    "ELF image_id mismatch: expected {}, got {}",
+                    details.image_id,
+                    computed_image_id
+                ));
+            }
+        
+            let key = format!("{ELF_BUCKET_DIR}/{}", details.image_id);
+            if self
+                .s3_client
+                .object_exists(&key)
+                .await
+                .context("Failed to check if ELF object exists")?
+            {
+                tracing::info!("ELF object already exists at {}, skipping upload.", key);
+            } else {
+                self.s3_client
+                    .write_buf_to_s3(&key, details.elf_data.clone())
+                    .await
+                    .with_context(|| {
+                        format!("Failed to upload ELF data to S3 for task {}", task.task_id)
+                    })?;
+            }
+            details.image_id.clone()
+        } else {
+            tracing::warn!("ELF data not provided, using default value");
+            return Err(anyhow::anyhow!("ELF data not provided"));
+        };
+
+        let input_id = if let Some(input_data) = &details.input_data {
+            if !input_data.data.is_empty() && !input_data.id.is_empty() {
+                let key = format!("{INPUT_BUCKET_DIR}/{}", input_data.id);
+                if self
+                    .s3_client
+                    .object_exists(&key)
+                    .await
+                    .context("Failed to check if input object exists")?
+                {
+                    tracing::info!("Input object already exists at {}, skipping upload.", key);
+                } else {
+                    self.s3_client
+                        .write_buf_to_s3(&key, input_data.data.clone())
+                        .await
+                        .with_context(|| {
+                            format!(
+                                "Failed to upload input data to S3 for task {}",
+                                task.task_id
+                            )
+                        })?;
+                }
+            } else {
+                tracing::warn!("Input data is empty, skipping upload.");
+                return Err(anyhow::anyhow!("Input data is empty"));
+            }
+            input_data.id.clone()
+        } else {
+            tracing::warn!("Input data not provided, using default value");
+            return Err(anyhow::anyhow!("Input data not provided"));
+        };
+
         let execute_only = details.execute_only;
         let exec_cycle_limit = details.exec_cycle_limit;
 
@@ -486,35 +545,28 @@ impl Agent {
         }
 
         let req = workflow_common::ExecutorReq {
-            image: image_id.clone(),
-            input: details
-                .input_data
-                .as_ref()
-                .map_or("".to_string(), |i| i.id.clone()),
+            image: image_id,
+            input: input_id,
             user_id: "grpc".to_string(),
             assumptions,
             execute_only,
             compress: workflow_common::CompressType::None,
-            exec_limit: if exec_cycle_limit > 0 {
-                Some(exec_cycle_limit)
-            } else {
-                None
-            },
+            exec_limit: Some(exec_cycle_limit),
         };
 
         let (
-            aux_stream,
+            _aux_stream,
             exec_stream,
-            gpu_prove_stream,
+            _gpu_prove_stream,
             _gpu_coproc_stream,
-            gpu_join_stream,
-            snark_stream,
+            _gpu_join_stream,
+            _snark_stream,
         ) = self.get_or_create_streams_for_grpc().await?;
 
         let task_def = serde_json::to_value(workflow_common::TaskType::Executor(req))
             .context("Failed to serialize ExecutorReq")?;
 
-        let job_id = taskdb::create_job(
+        let job_id: Uuid = taskdb::create_job(
             &self.db_pool,
             &exec_stream,
             &task_def,
@@ -525,11 +577,11 @@ impl Agent {
         .await
         .context("Failed to create prove task for gRPC request")?;
 
-        let mut conn = self.redis_pool.get().await?;
+        let mut conn: deadpool_redis::Connection = self.redis_pool.get().await?;
         redis::set_key_with_expiry(
             &mut conn,
             &task.task_id,
-            job_id.to_string().as_bytes().to_vec(),
+            job_id.to_string(),
             Some(self.args.redis_ttl),
         )
         .await?;
@@ -542,8 +594,42 @@ impl Agent {
         task: &grpc_client::bento::v1::TaskAssignment,
         details: &grpc_client::bento::v1::Groth16TaskDetails,
     ) -> Result<()> {
-        let stark_original_task_id = &details.stark_original_task_id;
-        let stark_receipt_data = &details.stark_receipt_data;
+        let receipt_id = if !details.stark_receipt_data.is_empty() {
+            // For Groth16, the receipt is specific to this SNARK task, derived from a previous STARK task.
+            // It's stored in a subfolder of RECEIPT_BUCKET_DIR/STARK_BUCKET_DIR, identified by the current snark task_id.
+            // This distinguishes it from the original STARK receipt which might be at RECEIPT_BUCKET_DIR/STARK_BUCKET_DIR/{original_stark_job_id}.bincode
+            let mut conn: deadpool_redis::Connection = self.redis_pool.get().await?;
+            let job_id = redis::get_key::<String>(
+                &mut conn,
+                &task.task_id,
+            ).await?;
+
+            let key = format!("{RECEIPT_BUCKET_DIR}/{STARK_BUCKET_DIR}/{}.bincode", job_id);
+            if self
+                .s3_client
+                .object_exists(&key)
+                .await
+                .context("Failed to check if Stark receipt for Snark object exists")?
+            {
+                tracing::warn!(
+                    "Stark receipt for Snark object already exists at {}, skipping upload.",
+                    key
+                );
+            } else {
+                self.s3_client
+                    .write_buf_to_s3(&key, details.stark_receipt_data.clone())
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "Failed to upload Stark receipt data to S3 for Groth16 task {}",
+                            task.task_id
+                        )
+                    })?;
+            }
+            job_id
+        } else {
+            details.stark_original_task_id.clone()
+        };
 
         let (
             _aux_stream,
@@ -555,14 +641,14 @@ impl Agent {
         ) = self.get_or_create_streams_for_grpc().await?;
 
         let req = workflow_common::SnarkReq {
-            receipt: stark_original_task_id.clone(),
+            receipt: receipt_id, // Use the determined S3 key
             compress_type: workflow_common::CompressType::Groth16,
         };
 
         let task_def = serde_json::to_value(workflow_common::TaskType::Snark(req))
             .context("Failed to serialize SnarkReq")?;
 
-        let job_id = taskdb::create_job(
+        let job_id: Uuid = taskdb::create_job(
             &self.db_pool,
             &snark_stream,
             &task_def,
@@ -577,7 +663,7 @@ impl Agent {
         redis::set_key_with_expiry(
             &mut conn,
             &task.task_id,
-            job_id.to_string().as_bytes().to_vec(),
+            job_id.to_string(),
             Some(self.args.redis_ttl),
         )
         .await?;
@@ -651,7 +737,6 @@ impl Agent {
             TaskType::Snark(_) => GROTH16_BUCKET_DIR,
             _ => STARK_BUCKET_DIR,
         };
-        
         let receipt_key = format!("{RECEIPT_BUCKET_DIR}/{bucket_dir}/{job_id}.bincode");
         if !&self
             .s3_client
@@ -699,13 +784,11 @@ impl Agent {
                 }
             }
             _ => {
-                // 对于非Snark任务，我们需要反序列化receipt并提取journal
                 let receipt_obj: risc0_zkvm::Receipt = bincode::deserialize(receipt)
                     .context("Failed to deserialize receipt with bincode")?;
                 let journal: risc0_zkvm::Journal = receipt_obj.journal.clone();
                 let journal_data = bincode::serialize(&journal)
                     .context("Failed to serialize journal data")?;
-                
                 let request = UploadStarkResultRequest {
                     task_id: job_id.to_string(),
                     receipt_data: receipt.clone(),
@@ -735,42 +818,54 @@ impl Agent {
                 }
             }
         }
+
+        // Delete the receipt from S3 after successful upload
+        match &self.s3_client.delete_object(&receipt_key).await {
+            Ok(_) => {
+                tracing::info!("Deleted receipt from S3: {}", receipt_key);
+            }
+            Err(e) => {
+                tracing::warn!("Failed to delete receipt from S3: {}: {}", receipt_key, e);
+            }
+        }
         Ok(())
     }
 
-    async fn update_grpc_task_status_if_exists(&self, job_id: &uuid::Uuid, task_id: &String, task_type: &TaskType, res: &serde_json::Value) -> Result<()> {
+    async fn update_grpc_task_status_if_exists(&self, job_id: &uuid::Uuid, task_type: &TaskType, res: &serde_json::Value) -> Result<()> {
         if self.grpc_client.is_none() {
             return Ok(());
         }
 
-        let mut message: String = String::new();
-        let mut status: i32 = 0;
-        let mut total_segments: Option<u64> = None;
-        let mut total_cycles: Option<u64> = None;
-
-        match task_type {
+        let (status, message, total_segments, total_cycles) = match task_type {
             TaskType::Executor(_) => {
-                message = format!("Task is executing");
-                status = grpc_client::bento::v1::TaskStatus::GeneratingProof as i32;
-                if let Ok(exec_resp) = serde_json::from_value::<workflow_common::ExecutorResp>(res.clone()){
+                let mut total_segments = None;
+                let mut total_cycles = None;
+                if let Ok(exec_resp) =
+                    serde_json::from_value::<workflow_common::ExecutorResp>(res.clone())
+                {
                     total_cycles = Some(exec_resp.total_cycles);
                     total_segments = Some(exec_resp.segments);
                 }
+                (
+                    grpc_client::bento::v1::TaskStatus::GeneratingProof as i32,
+                    "Task is executing".to_string(),
+                    total_segments,
+                    total_cycles,
+                )
             }
-            TaskType::Finalize(_) => {
-                status = grpc_client::bento::v1::TaskStatus::Completed as i32;
-                message = format!("Task is Completed");
-            }
-            TaskType::Snark(_) => {
-                status = grpc_client::bento::v1::TaskStatus::Completed as i32;
-                message = format!("Task is Completed");
-            }
-            _ => {
-                status = grpc_client::bento::v1::TaskStatus::GeneratingProof as i32;
-                message = format!("Task is generating proof");
-            }
-        }
-
+            TaskType::Finalize(_) | TaskType::Snark(_) => (
+                grpc_client::bento::v1::TaskStatus::Completed as i32,
+                "Task is Completed".to_string(),
+                None,
+                None,
+            ),
+            _ => (
+                grpc_client::bento::v1::TaskStatus::GeneratingProof as i32,
+                "Task is generating proof".to_string(),
+                None,
+                None,
+            ),
+        };
 
         let update_request = grpc_client::bento::v1::UpdateTaskProgressRequest {
             task_id: job_id.to_string(),
