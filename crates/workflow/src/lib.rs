@@ -225,7 +225,13 @@ impl Agent {
         };
 
         let grpc_client = if args.enable_grpc {
-            Some(grpc_client::BentoClient::new(args.grpc_endpoint.clone()).await?)
+            match grpc_client::BentoClient::new(args.grpc_endpoint.clone()).await {
+                Ok(client) => Some(client),
+                Err(err) => {
+                    tracing::warn!("Failed to create gRPC client: {}", err);
+                    None
+                }
+            }
         } else {
             None
         };
