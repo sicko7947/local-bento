@@ -1,11 +1,12 @@
 use grpc_client::bento::v1::{
-    Input, RequestTaskRequest, StarkTaskDetails, Groth16TaskDetails, TaskAssignment,
-    UpdateTaskProgressRequest, UpdateTaskProgressResponse, UploadStarkResultRequest,
-    UploadStarkResultResponse, UploadGroth16ResultRequest, UploadGroth16ResultResponse,
-    TaskStatus, task_assignment::{TaskDetails},
+    RequestTaskRequest,
+    UpdateTaskProgressRequest,
+    UploadStarkResultRequest,
+    UploadGroth16ResultRequest,
+    TaskStatus,
+    task_assignment::TaskDetails,
 };
 use grpc_client::BentoClient;
-use tonic::transport::{Endpoint, Server};
 
 
 #[tokio::test]
