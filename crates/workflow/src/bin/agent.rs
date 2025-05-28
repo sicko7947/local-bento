@@ -29,7 +29,11 @@ async fn main() -> Result<()> {
     tracing::info!("Successful agent startup! Original worker type: {task_stream}");
 
     if enable_grpc && task_stream == EXEC_WORK_TYPE{
-        tracing::info!("Starting gRPC task polling to endpoint: {}", grpc_endpoint);
+        if let Some(endpoint) = &grpc_endpoint {
+            tracing::info!("Starting gRPC task polling to endpoint: {}", endpoint);
+        } else {
+            tracing::info!("Starting gRPC task polling (no endpoint configured)");
+        }
         
         tokio::select! {
             grpc_result = agent.poll_grpc_tasks() => {

@@ -148,11 +148,11 @@ pub struct Args {
     snark_retries: i32,
 
     /// gRPC server endpoint for task polling
-    #[clap(env, long)]
-    pub grpc_endpoint: String,
+    #[clap(env, long, default_value = "http://localhost:50051")]
+    pub grpc_endpoint: Option<String>,
 
     /// Enable polling for gRPC tasks
-    #[clap(long, default_value_t = false)]
+    #[clap(long, default_value_t = true)]
     pub enable_grpc: bool,
 
     /// Polling interval between gRPC tasks
@@ -225,12 +225,17 @@ impl Agent {
         };
 
         let grpc_client = if args.enable_grpc {
-            match grpc_client::BentoClient::new(args.grpc_endpoint.clone()).await {
-                Ok(client) => Some(client),
-                Err(err) => {
-                    tracing::warn!("Failed to create gRPC client: {}", err);
-                    None
+            if let Some(endpoint) = &args.grpc_endpoint {
+                match grpc_client::BentoClient::new(endpoint.clone()).await {
+                    Ok(client) => Some(client),
+                    Err(err) => {
+                        tracing::warn!("Failed to create gRPC client: {}", err);
+                        None
+                    }
                 }
+            } else {
+                tracing::warn!("gRPC is enabled but no endpoint provided");
+                None
             }
         } else {
             None
@@ -516,31 +521,51 @@ impl Agent {
         };
 
         let input_id = if let Some(input_data) = &details.input_data {
-            if !input_data.data.is_empty() && !input_data.id.is_empty() {
-                let key = format!("{INPUT_BUCKET_DIR}/{}", input_data.id);
-                if self
-                    .s3_client
-                    .object_exists(&key)
-                    .await
-                    .context("Failed to check if input object exists")?
-                {
-                    tracing::info!("Input object already exists at {}, skipping upload.", key);
-                } else {
-                    self.s3_client
-                        .write_buf_to_s3(&key, input_data.data.clone())
-                        .await
-                        .with_context(|| {
-                            format!(
-                                "Failed to upload input data to S3 for task {}",
-                                task.task_id
-                            )
-                        })?;
-                }
+            if input_data.id.is_empty() {
+            if !input_data.data.is_empty() {
+                // Generate a new UUID for the input id
+                let new_id = Uuid::new_v4().to_string();
+                let key = format!("{INPUT_BUCKET_DIR}/{}", new_id);
+                self.s3_client
+                .write_buf_to_s3(&key, input_data.data.clone())
+                .await
+                .with_context(|| {
+                    format!(
+                    "Failed to upload input data to S3 for task {} with generated id",
+                    task.task_id
+                    )
+                })?;
+                new_id
             } else {
-                tracing::warn!("Input data is empty, skipping upload.");
-                return Err(anyhow::anyhow!("Input data is empty"));
+                tracing::warn!("Input id and data are both empty, skipping upload.");
+                return Err(anyhow::anyhow!("Input id and data are both empty"));
+            }
+            } else {
+            let key = format!("{INPUT_BUCKET_DIR}/{}", input_data.id);
+            if self
+                .s3_client
+                .object_exists(&key)
+                .await
+                .context("Failed to check if input object exists")?
+            {
+                tracing::info!("Input object already exists at {}, skipping upload.", key);
+            } else if !input_data.data.is_empty() {
+                self.s3_client
+                .write_buf_to_s3(&key, input_data.data.clone())
+                .await
+                .with_context(|| {
+                    format!(
+                    "Failed to upload input data to S3 for task {} with id {}",
+                    task.task_id,
+                    input_data.id
+                    )
+                })?;
+            } else {
+                tracing::warn!("Input id provided but input data is empty, cannot upload.");
+                return Err(anyhow::anyhow!("Input id provided but input data is empty"));
             }
             input_data.id.clone()
+            }
         } else {
             tracing::warn!("Input data not provided, using default value");
             return Err(anyhow::anyhow!("Input data not provided"));
