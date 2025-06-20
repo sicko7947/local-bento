@@ -28,7 +28,7 @@ nix = { version = "0.30.0", features = ["fs"] }
 hex = { version = "0.4", default-features = false, features = ["alloc"] }
 redis = { version = "0.31.0", features = ["tokio-comp"] }
 risc0-build = "2.1.0"
-risc0-zkvm = { version = "2.0.2", default-features = false }
+risc0-zkvm = { version = "2.1.0", default-features = false }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sqlx = { version = "0.8.6", default-features = false }
