@@ -2,9 +2,7 @@ syntax = "proto3";
 
 package bento.v1;
 
-option go_package = "github.com/sicko7947/gen/go/bento/v1;bentov1";
-option java_package = "com.compliance0.bento.v1";
-option java_multiple_files = true;
+option go_package = "bento/v1/bento_service_grpc";
 
 // --------------- Service Definition ---------------
 

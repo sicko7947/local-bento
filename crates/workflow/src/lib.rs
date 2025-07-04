@@ -572,7 +572,8 @@ impl Agent {
         };
 
         let execute_only = details.execute_only;
-        let exec_cycle_limit = details.exec_cycle_limit;
+        // Use exec_cycle_limit from details if provided, otherwise fallback to self.args.exec_cycle_limit
+        let exec_cycle_limit = details.exec_cycle_limit.max(self.args.exec_cycle_limit);
 
         let mut assumptions = Vec::new();
         for input in &details.assumption_inputs {
